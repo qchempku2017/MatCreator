@@ -58,7 +58,7 @@ class WorkflowClassification(BaseModel):
     reasoning: str = Field(
         ...,
         description="Brief explanation of why this workflow type was chosen",
-        max_length=300,
+        #max_length=300,
     )
 
 class ApprovalAssessment(BaseModel):
@@ -73,11 +73,14 @@ class ApprovalAssessment(BaseModel):
     )
 
 _CLASSIFICATION_INSTRUCTION = f"""
-You are an agent that determine user goal.
+You are an agent that determine user goal. 
 
 ## Task
 - Infer the user's goal as one concise sentence using the correct domain terminology above.
 - Provide short reasoning explaining which workflow type applies.
+
+## Rule
+Output in JSON format
 """
 
 _APPROVAL_INSTRUCTIION ="""
@@ -128,6 +131,14 @@ intent_tool_agent = LlmAgent(
         model=_model_name,
         base_url=_model_base_url,
         api_key=_model_api_key,
+        #extra_body={"enable_thinking": False},
+        #response_format={
+        #    "type": "json_schema", 
+        #    "json_schema": {
+        #        "name":"goal_schema",
+        #        "strict": True,
+        #        "schema":WorkflowClassification.model_json_schema()
+         #       }}
     ),
     description="Determine user's goal.",
     instruction=_CLASSIFICATION_INSTRUCTION,
@@ -137,13 +148,13 @@ intent_tool_agent = LlmAgent(
 )
 
 assessment_tool_agent = LlmAgent(
-    name="assessment_tool_agent",
+    name="check_approval",
     model=LiteLlm(
         model=_model_name,
         base_url=_model_base_url,
         api_key=_model_api_key,
     ),
-    description="Assess user approval for EXECUTION. ONLY call after explicit user response",
+    description="Check user approval for EXECUTION. ONLY call after explicit user response",
     instruction=_APPROVAL_INSTRUCTIION,
     output_schema=ApprovalAssessment,
     disallow_transfer_to_parent=True,
@@ -211,7 +222,7 @@ def after_tool_modifier(
         tool_context.state['plan'] = tool_response
         tool_context.state['detailed_steps']=tool_response.get('steps')
         
-    elif tool_name == 'assessment_tool_agent':
+    elif tool_name == 'check_approval':
         tool_context.state['approval'] = tool_response.get('approved')    
     
     elif tool_name == 'summarize_agent':
@@ -247,7 +258,7 @@ thinking_agent = LlmAgent(
         model=_model_name,
         base_url=_model_base_url,
         api_key=_model_api_key,
-        extra_body={"enable_thinking": False}
+        #extra_body={"enable_thinking": False}
     ),
     description=(
         "Thinking-phase orchestrator. Classifies workflow, creates structured execution plans, "
