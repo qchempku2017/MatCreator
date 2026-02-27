@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
-from ...constants import _SKILLS_DIR
+from ..constants import _SKILLS_DIR
 
 
 @dataclass(frozen=True)

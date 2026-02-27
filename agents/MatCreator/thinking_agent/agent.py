@@ -13,6 +13,7 @@ import os
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.models import llm_response
+from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.agent_tool import AgentTool
 from google.adk.tools.tool_context import ToolContext
 from google.adk.agents.callback_context import CallbackContext
@@ -24,8 +25,7 @@ from ..constants import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
 from ..prompts.subagents import format_subagent_descriptions
 from .planning_agent.agent import plan_builder_agent
 from .summarize_agent.agent import summarize_agent
-from .skill_search_agent.skill import _load_skill_registry
-from .skill_search_agent.agent import skill_search_tool_agent
+from .skill import _load_skill_registry
 from .memory import load_memory
 from .memory import update_memory
 from ..constants import _KNOWLEDGE_PATH
@@ -106,7 +106,7 @@ machine-learning force field.
 You orchestrate planning through tool sub-agents:
 - intent_tool_agent              : determine user's goal
 - plan_builder_agent             : drafts a detailed ExecutionPlan
-- assessment_tool_agent               : evaluates user replies (goal confirmation, plan approval, execution assessment)
+- approval_execution             : ask user permission to proceed to Execution
 - summarize_agent                : summarizes execution results from goal, plan, and execution history
 - update_memory(new_entries)     : appends new knowledge to MEMORY.md
 
@@ -117,7 +117,7 @@ You keep track of these state to decide what to do:
 
 Approval gate:
 - Always check with user after running `intent_tool_agent`.
-- Call `assessment_tool_agent` before moving to execution.
+- Call `approval_execution` before moving to execution.
 - If the user requests changes or asks questions, remain in thinking phase.
 """
 
@@ -131,14 +131,6 @@ intent_tool_agent = LlmAgent(
         model=_model_name,
         base_url=_model_base_url,
         api_key=_model_api_key,
-        #extra_body={"enable_thinking": False},
-        #response_format={
-        #    "type": "json_schema", 
-        #    "json_schema": {
-        #        "name":"goal_schema",
-        #        "strict": True,
-        #        "schema":WorkflowClassification.model_json_schema()
-         #       }}
     ),
     description="Determine user's goal.",
     instruction=_CLASSIFICATION_INSTRUCTION,
@@ -154,7 +146,7 @@ assessment_tool_agent = LlmAgent(
         base_url=_model_base_url,
         api_key=_model_api_key,
     ),
-    description="Check user approval for EXECUTION. ONLY call after explicit user response",
+    description="Check user approval for EXECUTION. REQUIRE explicit user approval to use this tool",
     instruction=_APPROVAL_INSTRUCTIION,
     output_schema=ApprovalAssessment,
     disallow_transfer_to_parent=True,
@@ -184,7 +176,7 @@ def before_tool_callback(
         registry = _load_skill_registry()
         lines = []
         for skill in registry.values():
-            tags_str = ", ".join(skill.tags) if skill.tags else "none"
+            #tags_str = ", ".join(skill.tags) if skill.tags else "none"
             lines.append(f"- {skill.name}: {skill.description} - Instruction {skill.instruction})")
         skills_text = "\n\n".join(lines) if lines else "No skills available."
         tool_context.state["skills"] = skills_text
@@ -223,7 +215,7 @@ def after_tool_modifier(
         tool_context.state['detailed_steps']=tool_response.get('steps')
         
     elif tool_name == 'check_approval':
-        tool_context.state['approval'] = tool_response.get('approved')    
+        tool_context.state['approval'] = True#tool_response.get('approved')    
     
     elif tool_name == 'summarize_agent':
         tool_context.state['summarize'] = tool_response
@@ -252,6 +244,17 @@ def after_model_modifier(
 # ThinkingAgent instance
 # ---------------------------------------------------------------------------
 
+def approval_execution(tool_context:ToolContext)->dict:
+    """Approve for execution. Require explicit user approval"""
+    tool_context.state["approved"]=True
+    return {
+        "status":"ok",
+        "message": "Execution approved",
+        #"approved": True
+    }
+
+
+
 thinking_agent = LlmAgent(
     name="thinking_agent",
     model=LiteLlm(
@@ -270,10 +273,11 @@ thinking_agent = LlmAgent(
     tools=[
         AgentTool(intent_tool_agent),
         AgentTool(plan_builder_agent),
-        AgentTool(assessment_tool_agent),
+        #AgentTool(assessment_tool_agent),
         AgentTool(summarize_agent),
         #AgentTool(skill_search_tool_agent),
         update_memory,
+        FunctionTool(approval_execution,require_confirmation=True)
     ],
     before_agent_callback=before_agent_callback,
     before_tool_callback=before_tool_callback,

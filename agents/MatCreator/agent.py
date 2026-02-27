@@ -2,11 +2,12 @@ from google.adk.agents import LlmAgent, InvocationContext, LoopAgent
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
-from google.adk.events import Event
-from google.genai.types import Content, Part
-from google.adk.apps import App
+from google.adk.apps import App, ResumabilityConfig
+from google.adk.tools.function_tool import FunctionTool
 import os
 import logging
+import litellm
+#litellm
 from .thinking_agent import thinking_agent
 from .execution_agent import execution_agent
 from .constants import LLM_MODEL, LLM_API_KEY, LLM_BASE_URL
@@ -78,56 +79,30 @@ class MatCreatorFlowAgent(LlmAgent):
         state["phase"] = phase
         return phase
     
-    async def _run_async_impl_dep(self, ctx: InvocationContext):
-        """Route by phase only: thinking -> thinking agent, execution -> execution agent."""
-        state = ctx.session.state
-        phase = self._normalize_phase(state)
-        logger.info("Phase routing: %s", phase)
-        print("[AGENT]: Runtime activated")
-        if phase == "thinking":
+    async def _run_async_impl(self, ctx: InvocationContext):
+        """Loop thinking/execution until approval check requests return."""
+        while True:
+            #state = ctx.session.state
+            #phase = self._normalize_phase(state)
+            #logger.info("Phase routing: %s", phase)
+            #print("[AGENT]: Runtime activated")
+
             async for event in thinking_agent.run_async(ctx):
                 yield event
-            if not ctx.session.state.get("approval",False):
-               return
-        
-        if phase == "execution":
+
+            if not ctx.session.state.get("approval", False):
+                return
+
+            print("[AGENT]: Execution phase")
             async for event in execution_agent.run_async(ctx):
                 yield event
 
-            async for event in thinking_agent.run_async(ctx):
-                yield event
-
-        #logger.warning("Invalid phase '%s', forcing thinking", phase)
-            state["phase"] = "thinking"
-        #yield Event(
-        #    content=Content(parts=[Part(text="ℹ️ Invalid workflow phase detected. Reset to thinking mode.")]),
-        #    author=self.name,
-        #)
-        return
-    async def _run_async_impl(self, ctx: InvocationContext):
-        """Route by phase only: thinking -> thinking agent, execution -> execution agent."""
-        state = ctx.session.state
-        phase = self._normalize_phase(state)
-        logger.info("Phase routing: %s", phase)
-        print("[AGENT]: Runtime activated")
-        #if phase == "thinking":
-        async for event in thinking_agent.run_async(ctx):
-            #if not ctx.session.state.get("approval",False):
+            #async for event in thinking_agent.run_async(ctx):
             #    yield event
-            #    return
-            yield event
-        if not ctx.session.state.get("approval",False):
-            return
-        
-        #if phase == "execution":
-        print("[AGENT]: Execution phase")        
-        async for event in execution_agent.run_async(ctx):
-            yield event
-            
-        async for event in thinking_agent.run_async(ctx):
-            yield event
-        return
 
+            #if not ctx.session.state.get("approval", False):
+            #    return
+        
 
 def before_agent_callback_root(callback_context: CallbackContext):
     """Set environment variables and initialize session state for MatCreator agent."""
@@ -211,7 +186,7 @@ structure_builder_agent = RemoteA2aAgent(
 )
 
 
-root_agent = MatCreatorFlowAgent(
+_root_agent = MatCreatorFlowAgent(
     name='MatCreator_agent',
     model=LiteLlm(
         model=model_name,
@@ -231,8 +206,11 @@ root_agent = MatCreatorFlowAgent(
 
 
 app = App(
-    name="Matcreator",
-    root_agent=root_agent,
+    name="MatCreator",
+    root_agent=_root_agent,
+    resumability_config=ResumabilityConfig(
+        is_resumable=True,
+    ),
     # Optionally include App-level features:
     # plugins, context_cache_config, resumability_config
 )
