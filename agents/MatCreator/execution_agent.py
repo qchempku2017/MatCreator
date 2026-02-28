@@ -48,6 +48,43 @@ Steps: {detailed_steps}
 
 class ExecutionAgent(LlmAgent):
     """Agent that executes approved plans by orchestrating domain agents."""
+
+    @staticmethod
+    def _extract_event_text(event: Event) -> str:
+        """Extract plain text content from an ADK event."""
+        content = getattr(event, "content", None)
+        if content is None:
+            return ""
+        parts = getattr(content, "parts", None) or []
+        chunks: List[str] = []
+        for part in parts:
+            text = getattr(part, "text", None)
+            if isinstance(text, str) and text.strip():
+                chunks.append(text.strip())
+        return "\n".join(chunks)
+
+    @classmethod
+    def _save_key_execution_event(cls, state: Dict[str, Any], event: Event) -> None:
+        """Save key execution event text to state['execution_history'] as a list."""
+        text = cls._extract_event_text(event)
+        if not text:
+            return
+
+        author = getattr(event, "author", "")
+        entry = f"[{author}] {text}" if author else text
+
+        history = state.get("execution_history")
+        if not isinstance(history, list):
+            history = []
+
+        if not history or history[-1] != entry:
+            history.append(entry)
+
+        if len(history) > 200:
+            history = history[-200:]
+
+        state["execution_history"] = history
+        state["execution_last_output"] = entry
     
     async def _run_async_impl(self, ctx: InvocationContext):
         """Execute the approved plan step by step."""
@@ -70,13 +107,18 @@ class ExecutionAgent(LlmAgent):
             "execution_started": True,
             "execution_complete": False,
             "goal_achieved": False,
+            "execution_history": [],
+            "execution_last_output": "",
         }
+        ctx.session.state.update(state_update)
         event_action = EventActions(state_delta=state_update)
-        yield Event(
+        start_event = Event(
             content=Content(parts=[Part(text=f"🚀 Starting execution: {goal}")]),
             author=self.name,
             actions=event_action
         )
+        self._save_key_execution_event(ctx.session.state, start_event)
+        yield start_event
         
         logger.info(f"Starting execution of plan: {goal}")
         
@@ -89,15 +131,23 @@ class ExecutionAgent(LlmAgent):
         # Execute by delegating to LLM with domain agents available
         try:
             async for event in super()._run_async_impl(ctx):
+                self._save_key_execution_event(ctx.session.state, event)
                 yield event
+
+            ctx.session.state["execution_complete"] = True
+            ctx.session.state["goal_achieved"] = True
             logger.info("Plan execution completed successfully")
             
         except Exception as e:
             logger.error(f"Execution failed: {e}")
-            yield Event(
+            error_event = Event(
                 content=Content(parts=[Part(text=f"❌ Execution error: {str(e)}")]),
                 author=self.name
             )
+            self._save_key_execution_event(ctx.session.state, error_event)
+            ctx.session.state["execution_complete"] = True
+            ctx.session.state["goal_achieved"] = False
+            yield error_event
         finally:
             # Restore original instruction
             self.instruction = original_instruction

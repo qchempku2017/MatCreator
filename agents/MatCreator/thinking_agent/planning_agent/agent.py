@@ -82,7 +82,7 @@ class PlanBuilderInput(BaseModel):
 
     goal: str = Field(
         ...,
-        description="Confirmed user goal in one sentence.",
+        description="Immediate goal in one sentence.",
     )
 
 
@@ -105,26 +105,29 @@ Requirements:
 - Use ONLY agent names that appear in agent_descriptions.
 - Keep each step specific and concise.
 - List steps ONLY for the current stage.
+
+Strictly Follow the JSON output.
 """
 
 
 # ---------------------------------------------------------------------------
 # Agent
 # ---------------------------------------------------------------------------
-
+output_schema=ExecutionPlan.model_json_schema()
+output_schema.update({"additional_properties":False})
+print(output_schema)
 plan_builder_agent = LlmAgent(
     name="plan_builder_agent",
     model=LiteLlm(
         model=_model_name,
         base_url=_model_base_url,
-        api_key=_model_api_key,
-        #extra_body={"enable_thinking": False},
+        api_key=_model_api_key
     ),
     description=(
         "Produces a detailed ExecutionPlan JSON. Used as a tool by the ThinkingAgent."
     ),
     instruction=_PLAN_BUILDER_INSTRUCTION,
-    #input_schema=PlanBuilderInput,
+    input_schema=PlanBuilderInput,
     output_schema=ExecutionPlan,
     disallow_transfer_to_parent=True,
     disallow_transfer_to_peers=True,

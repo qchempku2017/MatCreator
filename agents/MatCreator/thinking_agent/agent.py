@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 from ..constants import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
 from ..prompts.subagents import format_subagent_descriptions
 from .planning_agent.agent import plan_builder_agent
-from .summarize_agent.agent import summarize_agent
+#from .summarize_agent.agent import summarize_agent
 from .skill import _load_skill_registry
 from .memory import load_memory
 from .memory import update_memory
@@ -156,7 +156,8 @@ assessment_tool_agent = LlmAgent(
 # before_agent_callback
 def before_agent_callback(callback_context: CallbackContext):
     """Set environment variables and initialize session state for MatCreator agent."""
-    callback_context.state['approval'] = False
+    #callback_context.state['approval'] = False
+    callback_context.state.setdefault("summarize",default=None)
     return None
 
 def before_tool_callback(
@@ -231,10 +232,10 @@ def after_model_modifier(
 ) -> Optional[Dict]:
     """Inspects/modifies the tool result after execution."""
     
-    for k,v in callback_context._invocation_context.session.state.items():
-        print(f"[Callback] Session state {k}:{v}")
+    #for k,v in callback_context._invocation_context.session.state.items():
+    #    print(f"[Callback] Session state {k}:{v}")
     
-    k_list=["goal","plan"]
+    k_list=["phase"]
     for k in k_list:
         print(f"[Callback] The current states are {k}:{callback_context.state.get(k)}")
     # Return None to use the original tool_response
@@ -244,13 +245,14 @@ def after_model_modifier(
 # ThinkingAgent instance
 # ---------------------------------------------------------------------------
 
-def approval_execution(tool_context:ToolContext)->dict:
-    """Approve for execution. Require explicit user approval"""
-    tool_context.state["approved"]=True
+def approval_execution(tool_context: ToolContext) -> dict:
+    """Transition to execution phase. Only call this AFTER the user has explicitly
+    approved the plan in natural language (e.g. 'yes', 'ok', 'proceed', 'looks good').
+    Do NOT call this if the user is still asking questions or requesting changes."""
+    tool_context.state["phase"] = "execution"
     return {
-        "status":"ok",
+        "status": "ok",
         "message": "Execution approved",
-        #"approved": True
     }
 
 
@@ -274,10 +276,10 @@ thinking_agent = LlmAgent(
         AgentTool(intent_tool_agent),
         AgentTool(plan_builder_agent),
         #AgentTool(assessment_tool_agent),
-        AgentTool(summarize_agent),
+        #AgentTool(summarize_agent),
         #AgentTool(skill_search_tool_agent),
         update_memory,
-        FunctionTool(approval_execution,require_confirmation=True)
+        FunctionTool(approval_execution)
     ],
     before_agent_callback=before_agent_callback,
     before_tool_callback=before_tool_callback,

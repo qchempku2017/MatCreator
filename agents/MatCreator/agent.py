@@ -10,6 +10,7 @@ import litellm
 #litellm
 from .thinking_agent import thinking_agent
 from .execution_agent import execution_agent
+from .summarize_agent import summarize_agent
 from .constants import LLM_MODEL, LLM_API_KEY, LLM_BASE_URL
 from .callbacks import (
     set_session_metadata,
@@ -81,27 +82,30 @@ class MatCreatorFlowAgent(LlmAgent):
     
     async def _run_async_impl(self, ctx: InvocationContext):
         """Loop thinking/execution until approval check requests return."""
+        
+        
         while True:
-            #state = ctx.session.state
-            #phase = self._normalize_phase(state)
-            #logger.info("Phase routing: %s", phase)
-            #print("[AGENT]: Runtime activated")
-
-            async for event in thinking_agent.run_async(ctx):
-                yield event
-
-            if not ctx.session.state.get("approval", False):
-                return
-
-            print("[AGENT]: Execution phase")
-            async for event in execution_agent.run_async(ctx):
-                yield event
-
-            #async for event in thinking_agent.run_async(ctx):
-            #    yield event
+            state = ctx.session.state
+            print("[CHECKPOINT]",state["phase"])
+            if state["phase"]=="thinking":
+                print("[AGENT]: Runtime activated")
+                async for event in thinking_agent.run_async(ctx):
+                    yield event
 
             #if not ctx.session.state.get("approval", False):
             #    return
+
+
+            if state['phase']=='execution':
+                print("[AGENT]: Execution phase")
+                async for event in execution_agent.run_async(ctx):
+                    yield event
+
+                state['phase']="thinking"
+                async for event in summarize_agent.run_async(ctx):
+                    yield event
+            else:
+                return
         
 
 def before_agent_callback_root(callback_context: CallbackContext):
@@ -117,14 +121,8 @@ def before_agent_callback_root(callback_context: CallbackContext):
     
     # Initialize session state variables if not present
     state = callback_context._invocation_context.session.state
-    if 'phase' not in state or state.get('phase') not in {'thinking', 'execution'}:
-        if state.get('execution_started', False) and not state.get('execution_complete', False):
-            callback_context.state['phase'] = 'execution'
-        else:
-            callback_context.state['phase'] = 'thinking'
-
-    if 'thinking_state' not in state:
-        callback_context.state['thinking_state'] = 'need_goal'
+    if 'phase' not in state:
+        callback_context.state['phase']='thinking'
 
     # Legacy state defaults kept temporarily for migration compatibility
     if 'plan' not in state:
@@ -150,6 +148,12 @@ def before_agent_callback_root(callback_context: CallbackContext):
     
     if 'execution_complete' not in state:
         callback_context.state['execution_complete'] = False
+
+    if 'execution_history' not in state:
+        callback_context.state['execution_history'] = []
+
+    if 'execution_last_output' not in state:
+        callback_context.state['execution_last_output'] = ""
     
     if 'goal_achieved' not in state:
         callback_context.state['goal_achieved'] = False
