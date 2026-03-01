@@ -20,7 +20,7 @@ _model_name = os.environ.get("LLM_MODEL", LLM_MODEL)
 _model_api_key = os.environ.get("LLM_API_KEY", LLM_API_KEY)
 _model_base_url = os.environ.get("LLM_BASE_URL", LLM_BASE_URL)
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger()
 
 _EXECUTION_INSTRUCTION = """
 You are the execution agent. Your sole responsibility is to execute an approved plan by delegating to domain agents.
@@ -165,34 +165,57 @@ class ExecutionAgent(LlmAgent):
 
 # After agent callback
 def after_agent_callback(callback_context: CallbackContext):
-    """Set environment variables and initialize session state for MatCreator agent."""
+    """Reset phase to thinking after execution completes."""
     callback_context.state['phase'] = 'thinking'
     return None
 
+
 def return_weather():
     '''Get weather temperature'''
-    return {"city":"Beijing","temperature":"12 Celcius"}
-
-# Create execution agent instance with domain agents as sub-agents
-execution_agent = ExecutionAgent(
-    name="execution_agent",
-    model=LiteLlm(
-        model=_model_name,
-        base_url=_model_base_url,
-        api_key=_model_api_key,
-    ),
-    description="Executes approved plans by delegating to domain-specific agents in sequence.",
-    instruction=_EXECUTION_INSTRUCTION,
-    after_tool_callback=after_tool_callback,
-    disallow_transfer_to_parent=True,
-    disallow_transfer_to_peers=True,
-    after_agent_callback=after_agent_callback,
-    tools=[return_weather]
-    #sub_agents=list(SUBAGENTS.values())
-)
+    return {"city": "Beijing", "temperature": "12 Celcius"}
 
 
-# Export helper functions
+def build_execution_agent(plan: dict) -> ExecutionAgent:
+    """Factory that instantiates an ExecutionAgent scoped to the agents named in *plan*.
+
+    The set of required domain agents is derived from the ``agent`` field of each
+    ``PlanStep`` in *plan*. Only agents present in the global SUBAGENTS registry are
+    attached; unknown names are logged as warnings. If the plan is empty or malformed
+    every registered sub-agent is attached as a safe fallback.
+    """
+    steps = plan.get("steps", []) if isinstance(plan, dict) else []
+    needed_names: set[str] = {step["agent"] for step in steps if isinstance(step, dict) and "agent" in step}
+
+    if needed_names:
+        unknown = needed_names - SUBAGENTS.keys()
+        if unknown:
+            logger.warning(f"[ExecutorFactory] Plan references unknown agents: {unknown} — they will be skipped.")
+        sub_agents = [SUBAGENTS[name] for name in needed_names if name in SUBAGENTS]
+        logger.info(f"[ExecutorFactory] Attaching sub-agents: {[a.name for a in sub_agents]}")
+        print(f"[ExecutorFactory] Attaching sub-agents: {[a.name for a in sub_agents]}")
+        print(f"Name{__name__}")
+    else:
+        # Fallback: attach all registered agents when plan provides no agent names
+        logger.warning("[ExecutorFactory] No agent names found in plan steps — attaching all sub-agents as fallback.")
+        sub_agents = list(SUBAGENTS.values())
+    return ExecutionAgent(
+        name="execution_agent",
+        model=LiteLlm(
+            model=_model_name,
+            base_url=_model_base_url,
+            api_key=_model_api_key,
+        ),
+        description="Executes approved plans by delegating to domain-specific agents in sequence.",
+        instruction=_EXECUTION_INSTRUCTION,
+        after_tool_callback=after_tool_callback,
+        disallow_transfer_to_parent=True,
+        disallow_transfer_to_peers=True,
+        after_agent_callback=after_agent_callback,
+        sub_agents=sub_agents,
+    )
+
+
+# Export helpers
 __all__ = [
-    "execution_agent"
+    "build_execution_agent",
 ]
