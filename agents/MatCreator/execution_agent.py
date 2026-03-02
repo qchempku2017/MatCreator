@@ -106,10 +106,6 @@ class ExecutionAgent(LlmAgent):
         
         # Mark execution as started
         state_update = {
-            "phase": "execution",
-            "execution_started": True,
-            "execution_complete": False,
-            "goal_achieved": False,
             "execution_history": [],
             "execution_last_output": "",
         }
@@ -124,22 +120,12 @@ class ExecutionAgent(LlmAgent):
         yield start_event
         
         logger.info(f"Starting execution of plan: {goal}")
-        
-        # Build execution context with workflow-specific guidance
-        
-        # Inject execution context into instruction
-        original_instruction = self.instruction
-        self.instruction = _EXECUTION_INSTRUCTION #+ "\n\n" + execution_context
-        
-        # Execute by delegating to LLM with domain agents available
+    
         try:
             async for event in super()._run_async_impl(ctx):
                 self._save_key_execution_event(ctx.session.state, event)
                 yield event
-
-            ctx.session.state["execution_complete"] = True
-            ctx.session.state["goal_achieved"] = True
-            logger.info("Plan execution completed successfully")
+            logger.info("Plan execution completed")
             
         except Exception as e:
             logger.error(f"Execution failed: {e}")
@@ -148,34 +134,9 @@ class ExecutionAgent(LlmAgent):
                 author=self.name
             )
             self._save_key_execution_event(ctx.session.state, error_event)
-            ctx.session.state["execution_complete"] = True
-            ctx.session.state["goal_achieved"] = False
             yield error_event
         finally:
-            # Restore original instruction
-            self.instruction = original_instruction
             logger.info("Execution agent finished (assessment agent will determine next steps)")
-    
-    def _format_plan(self, plan: Dict[str, Any]) -> str:
-        """Format plan steps for display."""
-        lines = []
-        for step in plan.get('steps', []):
-            lines.append(
-                f"{step['step_number']}. [{step['agent']}] {step['action']}\n"
-                f"   Expected output: {step['expected_output']}"
-            )
-        return '\n'.join(lines)
-
-# After agent callback
-def after_agent_callback(callback_context: CallbackContext):
-    """Reset phase to thinking after execution completes."""
-    callback_context.state['phase'] = 'thinking'
-    return None
-
-
-def return_weather():
-    '''Get weather temperature'''
-    return {"city": "Beijing", "temperature": "12 Celcius"}
 
 
 # Module-level cache: plan fingerprint -> ExecutionAgent instance
@@ -248,7 +209,6 @@ def build_execution_agent(plan: dict) -> ExecutionAgent:
         after_tool_callback=after_tool_callback,
         disallow_transfer_to_parent=True,
         disallow_transfer_to_peers=True,
-        after_agent_callback=after_agent_callback,
         sub_agents=sub_agents,
     )
 

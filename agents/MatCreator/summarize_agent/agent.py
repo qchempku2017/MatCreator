@@ -111,11 +111,6 @@ Session state context:
 - plan: {plan}
 - execution_history: {execution_history}
 
-Input (ExecutionSummaryInput):
-- goal: optional override
-- plan: optional override
-- execution_history: optional override (list of key events)
-
 Task:
 1) Compare execution history against plan steps and goal.
 2) Determine completion status and infer completed/pending/failed step numbers.
@@ -124,7 +119,6 @@ Task:
 
 Source-of-truth rule:
 - Use session state `execution_history` as the default execution transcript.
-- If input.execution_history is non-empty, treat it as an explicit override.
 
 Rules:
 - Be conservative: if evidence is incomplete, use in_progress.
@@ -132,7 +126,6 @@ Rules:
 - concise_summary must be one short paragraph (2-4 sentences).
 - If all required steps are complete and goal achieved -> mark_complete.
 - If blocked by errors or missing prerequisites -> replan or request_user_input as appropriate.
-- Return only JSON conforming to ExecutionSummary.
 """
 
 
@@ -255,7 +248,7 @@ summarize_agent = SummarizeAgent(
         "returning a structured ExecutionSummary."
     ),
     instruction=_SUMMARIZE_INSTRUCTION,
-    input_schema=ExecutionSummaryInput,
+    #input_schema=ExecutionSummaryInput,
     output_schema=ExecutionSummary,
     disallow_transfer_to_parent=True,
     disallow_transfer_to_peers=True,
