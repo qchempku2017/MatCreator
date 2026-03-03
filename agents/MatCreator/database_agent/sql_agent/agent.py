@@ -10,11 +10,11 @@ from pydantic import BaseModel, Field
 from ...constants import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
 
 _SCHEMA_GUIDE = """
-The info database has three tables. Always prefer JOINs over subqueries.
+The info database has two tables. Always prefer JOINs over subqueries.
 
 TABLE: nodes
   node_id     INTEGER PK   -- unique DFT-setting group
-  name        TEXT         -- equals the Fields collection label (e.g. "Catalysis", "Alloy")
+    name        TEXT         -- derived domain label (e.g. "OpenLAM_Cluster", "OpenLAM_Alloy")
   functional  TEXT         -- PBE | PBEsol | LDA | SCAN | HSE06 ...
   code        TEXT         -- VASP | ABACUS | QE | CP2K ...
   description TEXT
@@ -26,7 +26,7 @@ TABLE: datasets
   elements    TEXT         -- hyphen-joined sorted symbols, e.g. "Fe-O"
   n_elements  INTEGER      -- number of distinct elements
   system_type TEXT         -- Bulk | Cluster | Surface | Interface ...
-  field       TEXT         -- collection label (same as nodes.name)
+    field       TEXT         -- scientific/application field (e.g. Catalysis, Alloy)
   entries     INTEGER      -- frame count in the .db file
   source      TEXT         -- URL / DOI / provenance label
   path        TEXT         -- relative path to the ASE .db file
@@ -46,34 +46,43 @@ RULES:
 5. Never write UPDATE/INSERT/DELETE/DROP/ALTER/PRAGMA or ATTACH.
 6. Use LIMIT only if the user specifies a cap (infer 20 for "a few" / "top").
 7. Parenthesize OR groups; use explicit AND/OR.
+8. Use n.name for domain filtering.
 
 EXAMPLES (follow these patterns):
-1) Exact formula in a given domain/name
+1) Exact formula in a given field
     User: "Find Si datasets in Catalysis"
     SQL: SELECT d.path AS path, d.elements AS elements, d.system_type AS system_type,
-                    d.entries AS entries, n.name AS node_name
+                    d.entries AS entries, n.name AS domain_name
           FROM datasets d
           JOIN nodes n ON d.node_id = n.node_id
-          WHERE d.elements = 'Si' AND n.name = 'Catalysis'
+          WHERE d.elements = 'Si' AND d.field = 'Catalysis'
 
 2) Exact formula + DFT functional
     User: "Find Si-O datasets with PBE"
     SQL: SELECT d.path AS path, d.elements AS elements, d.entries AS entries,
-                    n.functional AS functional, n.name AS node_name
+                    n.functional AS functional, n.name AS domain_name
           FROM datasets d
           JOIN nodes n ON d.node_id = n.node_id
           WHERE d.elements = 'O-Si' AND n.functional = 'PBE'
 
-3) Fuzzy system type with exact formula
+3) Exact formula + domain label
+    User: "Find Si datasets in OpenLAM_Cluster"
+    SQL: SELECT d.path AS path, d.elements AS elements, d.system_type AS system_type,
+                    d.entries AS entries, n.name AS domain_name
+          FROM datasets d
+          JOIN nodes n ON d.node_id = n.node_id
+          WHERE d.elements = 'Si' AND n.name = 'OpenLAM_Cluster'
+
+4) Fuzzy system type with exact formula
     User: "A few bulk Si datasets"
     SQL: SELECT d.path AS path, d.elements AS elements, d.system_type AS system_type,
-                    d.entries AS entries, n.name AS node_name
+                    d.entries AS entries, n.name AS domain_name
           FROM datasets d
           JOIN nodes n ON d.node_id = n.node_id
           WHERE d.elements = 'Si' AND d.system_type LIKE '%Bulk%'
           LIMIT 20
 
-4) Prohibited pattern (do not generate)
+5) Prohibited pattern (do not generate)
     SELECT ... FROM dataset_elements e WHERE e.element = 'Si'
 """
 

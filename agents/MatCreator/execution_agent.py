@@ -112,7 +112,7 @@ class ExecutionAgent(LlmAgent):
         ctx.session.state.update(state_update)
         event_action = EventActions(state_delta=state_update)
         start_event = Event(
-            content=Content(parts=[Part(text=f"🚀 Starting execution: {goal}")]),
+            #content=Content(parts=[Part(text=f"🚀 Starting execution: {goal}")]),
             author=self.name,
             actions=event_action
         )

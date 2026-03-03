@@ -124,7 +124,7 @@ class MatCreatorFlowAgent(BaseAgent):
                 logger.info(f"[{self.name}]: Execution agent recommends requesting user input, remain in execution phase")
                 event_action = EventActions(state_delta={"approval":False})
                 event = Event(
-                    content=Content(parts=[Part(text=f"thinking...")]),
+                    content=Content(parts=[Part(text=f"Waiting for user input...")]),
                     author=self.name,
                     actions=event_action
                     )
