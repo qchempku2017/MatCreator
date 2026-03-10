@@ -10,12 +10,19 @@ import logging
 from typing import Dict, Any, List
 from google.adk.agents import LlmAgent, InvocationContext
 from google.adk.agents.callback_context import CallbackContext
+from google.adk.apps.llm_event_summarizer import LlmEventSummarizer
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
 from google.adk.events import Event, EventActions
 from google.genai.types import Content, Part
-from .constants import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
+from .constants import (
+    LLM_API_KEY, LLM_BASE_URL, 
+    LLM_MODEL, 
+    EXECUTION_ENABLE_WITHIN_INVOCATION_COMPACTION,
+    EXECUTION_COMPACT_KEEP_TAIL,
+    EXECUTION_COMPACT_EVERY_EVENTS,
+)
 from .callbacks import after_tool_callback
 from .prompts.subagents import (
     SUBAGENTS,
@@ -24,6 +31,27 @@ from .prompts.subagents import (
 _model_name = os.environ.get("LLM_MODEL", LLM_MODEL)
 _model_api_key = os.environ.get("LLM_API_KEY", LLM_API_KEY)
 _model_base_url = os.environ.get("LLM_BASE_URL", LLM_BASE_URL)
+_EXECUTION_COMPACT_EVERY_EVENTS = int(os.environ.get("EXECUTION_COMPACT_EVERY_EVENTS", str(EXECUTION_COMPACT_EVERY_EVENTS)))
+_EXECUTION_COMPACT_KEEP_TAIL = int(os.environ.get("EXECUTION_COMPACT_KEEP_TAIL", str(EXECUTION_COMPACT_KEEP_TAIL)))
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    """Parse common truthy/falsey env var values with a safe default."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in {"1", "true", "t", "yes", "y", "on"}:
+        return True
+    if value in {"0", "false", "f", "no", "n", "off"}:
+        return False
+    return default
+
+
+_EXECUTION_ENABLE_WITHIN_INVOCATION_COMPACTION = _env_flag(
+    "EXECUTION_ENABLE_WITHIN_INVOCATION_COMPACTION",
+    EXECUTION_ENABLE_WITHIN_INVOCATION_COMPACTION,
+)
 
 logger = logging.getLogger()
 
@@ -48,6 +76,134 @@ def break_execution(tool_context: ToolContext) -> dict[str, str]:
 
 class ExecutionAgent(LlmAgent):
     """Agent that executes approved plans by orchestrating domain agents."""
+
+    @staticmethod
+    def _is_compaction_event(event: Event) -> bool:
+        return bool(event.actions and event.actions.compaction)
+
+    @classmethod
+    def _events_to_compact_for_current_invocation(
+        cls,
+        *,
+        events: List[Event],
+        invocation_id: str,
+        keep_tail: int,
+    ) -> List[Event]:
+        """Pick raw events for mid-invocation compaction for a single invocation id."""
+        raw_events = [
+            event
+            for event in events
+            if event.invocation_id == invocation_id and not cls._is_compaction_event(event)
+        ]
+        if len(raw_events) <= keep_tail:
+            return []
+
+        last_compacted_end_ts = 0.0
+        for event in events:
+            if event.invocation_id != invocation_id:
+                continue
+            if not cls._is_compaction_event(event):
+                continue
+            compaction = event.actions.compaction
+            if compaction and compaction.end_timestamp is not None:
+                last_compacted_end_ts = max(last_compacted_end_ts, compaction.end_timestamp)
+
+        new_raw_events = [e for e in raw_events if e.timestamp > last_compacted_end_ts]
+        if len(new_raw_events) <= keep_tail:
+            return []
+
+        return new_raw_events[:-keep_tail]
+
+    @classmethod
+    async def _compact_invocation_context_events(
+        cls,
+        *,
+        ctx: InvocationContext,
+        invocation_id: str,
+        summarizer: LlmEventSummarizer,
+    ) -> bool:
+        """Compact current invocation events and append a compaction event to the session."""
+        keep_tail = max(2, _EXECUTION_COMPACT_KEEP_TAIL)
+        session_events = ctx.session.events
+        new_session_events=[]
+        candidate_events = cls._events_to_compact_for_current_invocation(
+            events=session_events,
+            invocation_id=invocation_id,
+            keep_tail=keep_tail,
+        )
+        logger.info(
+            "Mid-invocation compaction check: invocation_id=%s total_session_events=%d candidates=%d",
+            invocation_id,
+            len(session_events),
+            len(candidate_events),
+        )
+        if not candidate_events:
+            return False
+
+        compaction_event = await summarizer.maybe_summarize_events(events=candidate_events)
+        if compaction_event is None:
+            return False
+
+        compaction_event.invocation_id = invocation_id
+        compaction_event.branch = getattr(ctx, "branch", None)
+
+        await ctx.session_service.append_event(session=ctx.session, event=compaction_event)
+
+        new_compaction = compaction_event.actions.compaction if compaction_event.actions else None
+        if not new_compaction:
+            return False
+
+        start_ts = new_compaction.start_timestamp
+        end_ts = new_compaction.end_timestamp
+
+        # Rebuild the in-memory session events to discard compacted raw events.
+        # Keep non-target invocation events as-is, keep compaction events, and
+        # for target invocation keep only raw events outside the compacted range.
+        new_session_events: List[Event] = []
+        for existing_event in session_events:
+            if existing_event.invocation_id != invocation_id:
+                new_session_events.append(existing_event)
+                continue
+
+            #if cls._is_compaction_event(existing_event):
+            #    new_session_events.append(existing_event)
+            #    continue
+
+            if start_ts <= existing_event.timestamp <= end_ts:
+                continue
+
+            new_session_events.append(existing_event)
+
+        # Ensure current compaction summary exists exactly once.
+        has_same_range = any(
+            cls._is_compaction_event(event)
+            and event.actions
+            and event.actions.compaction
+            and event.invocation_id == invocation_id
+            and event.actions.compaction.start_timestamp == start_ts
+            and event.actions.compaction.end_timestamp == end_ts
+            for event in new_session_events
+        )
+        if not has_same_range:
+            new_session_events.append(compaction_event)
+
+        # Replace the live list object in place so downstream code sees compacted context.
+        #session_events[:] = new_session_events
+        ctx.session.events = new_session_events
+        logger.info(
+            "Mid-invocation compaction completed: invocation_id=%s compacted_events=%d new_total_events=%d",
+            invocation_id,
+            len(candidate_events),
+            len(ctx.session.events),
+        )
+
+        ctx.session.state["execution_mid_invocation_compactions"] = int(
+            ctx.session.state.get("execution_mid_invocation_compactions", 0)
+        ) + 1
+        compaction_text = cls._extract_event_text(compaction_event)
+        if compaction_text:
+            ctx.session.state["execution_mid_invocation_last_summary"] = compaction_text
+        return True
 
     @staticmethod
     def _extract_event_text(event: Event) -> str:
@@ -105,8 +261,20 @@ class ExecutionAgent(LlmAgent):
         state_update = {
             "execution_history": [],
             "execution_last_output": "",
+            "execution_mid_invocation_event_count": 0,
+            "execution_mid_invocation_compactions": 0,
+            "execution_mid_invocation_last_summary": "",
+            "execution_within_invocation_compaction_enabled": _EXECUTION_ENABLE_WITHIN_INVOCATION_COMPACTION,
         }
         ctx.session.state.update(state_update)
+        compaction_summarizer = LlmEventSummarizer(
+            llm=LiteLlm(
+                model=_model_name,
+                base_url=_model_base_url,
+                api_key=_model_api_key,
+            )
+        )
+        current_invocation_id = ""
         event_action = EventActions(state_delta=state_update)
         start_event = Event(
             #content=Content(parts=[Part(text=f"🚀 Starting execution: {goal}")]),
@@ -117,10 +285,38 @@ class ExecutionAgent(LlmAgent):
         yield start_event
         
         logger.info(f"Starting execution of plan: {goal}")
+        logger.info(
+            "Within-invocation compaction enabled: %s",
+            _EXECUTION_ENABLE_WITHIN_INVOCATION_COMPACTION,
+        )
     
         try:
             async for event in super()._run_async_impl(ctx):
                 self._save_key_execution_event(ctx.session.state, event)
+                if not current_invocation_id and getattr(event, "invocation_id", None):
+                    current_invocation_id = str(event.invocation_id)
+                ctx.session.state["execution_mid_invocation_event_count"] = int(
+                    ctx.session.state.get("execution_mid_invocation_event_count", 0)
+                ) + 1
+                event_count = int(ctx.session.state["execution_mid_invocation_event_count"])
+                if (
+                    _EXECUTION_ENABLE_WITHIN_INVOCATION_COMPACTION
+                    and current_invocation_id
+                    and event_count % max(4, _EXECUTION_COMPACT_EVERY_EVENTS) == 0
+                ):
+                    try:
+                        did_compact = await self._compact_invocation_context_events(
+                            ctx=ctx,
+                            invocation_id=current_invocation_id,
+                            summarizer=compaction_summarizer,
+                        )
+                        if did_compact:
+                            logger.info(
+                                "Mid-invocation compaction appended to session events "
+                                f"(invocation_id={current_invocation_id}, event_count={event_count})"
+                            )
+                    except Exception as compaction_exc:
+                        logger.warning(f"Mid-invocation compaction skipped: {compaction_exc}")
                 yield event
             logger.info("Plan execution completed")
             
