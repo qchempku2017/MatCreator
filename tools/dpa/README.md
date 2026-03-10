@@ -9,5 +9,5 @@ BOHRIUM_PASSWORD="xxxxx"
 BOHRIUM_PROJECT_ID="xxxxx"
 BOHRIUM_DPA_IMAGE="registry.dp.tech/dptech/deepmd-kit:3.1.0-cuda12.1"
 BOHRIUM_DPA_MACHINE="1 * NVIDIA V100_32g"
-BOHRIUM_PYTHON_PACKAGES="dflow,ase,dpdata,dpa_tool"
+BOHRIUM_PYTHON_PACKAGES="dflow,ase,matcreator,dpa_tool"
 ```
