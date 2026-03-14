@@ -3,6 +3,8 @@ name: default
 description: General workflows for single-step or sequential tasks without iterative training loops.
 tags: [general, sequential, simple]
 allowed_agents: [database_agent, structure_agent, abacus_agent, vasp_agent, dpa_agent, plot_agent]
+needed_tools: []
+dependent_skills: []
 triggers: [pipeline, sequential, one-off, then, after, workflow]
 workflow_type: default
 ---
