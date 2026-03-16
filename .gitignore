@@ -222,6 +222,8 @@ __marimo__/
 
 .claude
 
+# workspace
+.workspace/
 
 # Sever related files
 *.orb
