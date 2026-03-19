@@ -514,7 +514,8 @@ class ExecutionAgent(LlmAgent):
             logger.info("Execution agent finished (assessment agent will determine next steps)")
 
 _SUMMARIZE_INSTRUCTION = """
-You summarize key outcomes and extract concrete artifacts (absolute paths/IDs when present).
+You summarize key outcomes and extract concrete artifacts 
+Use absolute paths for artifacts.
 
 Session state context:
 - goal: {goal}
