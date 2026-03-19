@@ -53,12 +53,6 @@ class ExecutionSummaryInput(BaseModel):
 
 class ExecutionSummary(BaseModel):
     """Structured summary of execution outcomes for decision making."""
-
-    goal: str = Field(
-        ...,
-        description="Goal that was evaluated.",
-        max_length=500,
-    )
     completion_status: Literal["completed", "in_progress", "blocked"] = Field(
         ...,
         description="Overall execution status against the approved plan and goal.",
@@ -112,26 +106,45 @@ Task:
 1) Compare execution history against plan steps and goal.
 2) Determine completion status and infer completed/pending/failed step numbers.
 3) Summarize key outcomes and extract concrete artifacts (absolute paths/IDs when present).
-4) Provide blockers and recommend one next action.
-
-Source-of-truth rule:
-- Use session state `execution_history` as the default execution transcript.
+4) Recommend one next action.
 
 Rules:
+- Use session state `execution_history` as the execution transcript.
 - Be conservative: if evidence is incomplete, use in_progress.
 - Do not invent artifacts or metrics; only include what appears in history.
 - concise_summary must be one short paragraph (2-4 sentences).
 - If all required steps are complete and goal achieved -> mark_complete.
+
+Output ONLY a JSON object — no markdown fences, no extra text:
+{{
+  "completion_status": "<completed | in_progress | blocked>",
+  "completed_steps": [<step numbers completed successfully>],
+  "pending_steps": [<step numbers not yet completed>],
+  "failed_steps": [<step numbers that failed or were blocked>],
+  "key_results": "<concise summary of what was produced or learned>",
+  "artifacts": ["<absolute path or ID of important generated files>"],
+  "recommended_next_action": "<continue_execution | request_user_input_but_no_need_to_replan | replan | mark_complete>",
+  "concise_summary": "<user-facing one-paragraph execution summary>"
+}}
 """
 
 _RETRY_INSTRUCTION_TEMPLATE = """
 
-Previous output failed schema validation:
+Previous output was invalid:
 {validation_error}
 
-Retry now and output ONLY a valid JSON object that conforms to the ExecutionSummary schema.
+Retry now. Output ONLY a valid JSON object exactly matching the format shown in the instructions above.
 Do not include markdown fences or explanatory text.
 """
+
+
+_VALID_COMPLETION_STATUSES = {"completed", "in_progress", "blocked"}
+_VALID_NEXT_ACTIONS = {
+    "continue_execution",
+    "request_user_input_but_no_need_to_replan",
+    "replan",
+    "mark_complete",
+}
 
 
 class SummarizeAgent(LlmAgent):
@@ -163,10 +176,10 @@ class SummarizeAgent(LlmAgent):
         return match.group(0) if match else text
 
     @classmethod
-    def _validate_execution_summary(
+    def _parse_and_validate_json(
         cls, event: Event | None
     ) -> tuple[dict[str, Any] | None, str | None]:
-        """Validate final event payload against ExecutionSummary schema."""
+        """Parse JSON and verify the critical state-binding keys are present and valid."""
         if event is None:
             return None, "No final response event was produced."
 
@@ -181,13 +194,25 @@ class SummarizeAgent(LlmAgent):
         except json.JSONDecodeError as exc:
             return None, f"JSON decode error: {exc}"
 
-        try:
-            from pydantic import ValidationError
-            validated = ExecutionSummary.model_validate(parsed)
-        except ValidationError as exc:
-            return None, f"Schema validation error: {exc}"
+        if not isinstance(parsed, dict):
+            return None, "Parsed JSON is not an object."
 
-        return validated.model_dump(), None
+        # Validate critical state-binding keys
+        completion_status = parsed.get("completion_status")
+        if completion_status not in _VALID_COMPLETION_STATUSES:
+            return None, (
+                f"'completion_status' is missing or invalid: {completion_status!r}. "
+                f"Must be one of: {sorted(_VALID_COMPLETION_STATUSES)}"
+            )
+
+        recommended_next_action = parsed.get("recommended_next_action")
+        if recommended_next_action not in _VALID_NEXT_ACTIONS:
+            return None, (
+                f"'recommended_next_action' is missing or invalid: {recommended_next_action!r}. "
+                f"Must be one of: {sorted(_VALID_NEXT_ACTIONS)}"
+            )
+
+        return parsed, None
 
     @staticmethod
     def _render_summary_text(summary: ExecutionSummary) -> str:
@@ -200,7 +225,6 @@ class SummarizeAgent(LlmAgent):
 
         return (
             "📋 Execution Summary\n"
-            f"Goal: {summary.goal}\n"
             f"Status: {summary.completion_status}\n"
             f"Completed steps: {completed}\n"
             f"Pending steps: {pending}\n"
@@ -252,7 +276,7 @@ class SummarizeAgent(LlmAgent):
                     else:
                         buffered_events.append(event)
 
-                validated_data, validation_error = self._validate_execution_summary(candidate_final)
+                validated_data, validation_error = self._parse_and_validate_json(candidate_final)
                 if validation_error is None:
                     for event in buffered_events:
                         yield event
@@ -275,6 +299,13 @@ class SummarizeAgent(LlmAgent):
                 )
                 return
 
+            # Fill in defaults for optional fields before constructing the model
+            validated_data.setdefault("completed_steps", [])
+            validated_data.setdefault("pending_steps", [])
+            validated_data.setdefault("failed_steps", [])
+            validated_data.setdefault("artifacts", [])
+            validated_data.setdefault("key_results", "")
+            validated_data.setdefault("concise_summary", "")
             summary_data = ExecutionSummary.model_validate(validated_data)
 
             rendered_text = self._render_summary_text(summary_data)
@@ -333,7 +364,6 @@ summarize_agent = SummarizeAgent(
     ),
     instruction=_SUMMARIZE_INSTRUCTION,
     #input_schema=ExecutionSummaryInput,
-    output_schema=ExecutionSummary,
     disallow_transfer_to_parent=True,
     disallow_transfer_to_peers=True,
 )

@@ -514,12 +514,19 @@ class ExecutionAgent(LlmAgent):
             logger.info("Execution agent finished (assessment agent will determine next steps)")
 
 _SUMMARIZE_INSTRUCTION = """
-You summarize key outcomes and extract concrete artifacts 
+You summarize key outcomes and extract concrete artifacts.
 Use absolute paths for artifacts.
 
 Session state context:
 - goal: {goal}
 - plan: {plan}
+
+Output ONLY a JSON object — no markdown fences, no extra text:
+{{
+  "key_results": "<concise summary of what was produced or learned during execution>",
+  "artifacts": ["<absolute path or ID of important generated files/paths/IDs>"],
+  "concise_summary": "<user-facing one-paragraph execution summary>"
+}}
 """
 
 class ExecutionSummary(BaseModel):
@@ -551,7 +558,6 @@ summarize_agent = LlmAgent(
         "returning a structured ExecutionSummary."
     ),
     instruction=_SUMMARIZE_INSTRUCTION,
-    output_schema=ExecutionSummary
 )
 
 
