@@ -211,12 +211,15 @@ def after_tool_modifier(
         tool_context.state['goal'] = tool_response.get('goal')
         
     elif tool_name == 'plan_builder_agent':
+        if isinstance(tool_response, str):
+            import json as _json, re as _re
+            _m = _re.search(r'\{[\s\S]*\}', tool_response)
+            try:
+                tool_response = _json.loads(_m.group(0)) if _m else {}
+            except _json.JSONDecodeError:
+                pass
         tool_context.state['plan'] = tool_response
-        tool_context.state['detailed_steps'] = tool_response.get('steps')
-        tool_context.state['skills_needed'] = list({
-            step['skill'] for step in (tool_response.get('steps') or [])
-            if isinstance(step, dict) and step.get('skill')
-        })
+        tool_context.state['detailed_steps'] = tool_response
         
     
     elif tool_name == 'summarize_agent':
