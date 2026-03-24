@@ -2,6 +2,23 @@
 
 <!-- version list -->
 
+## v1.0.10 (2026-03-24)
+
+### Bug Fixes
+
+- Skillization of database toolset
+  ([`f533b61`](https://github.com/nlz25/PFD_Agent/commit/f533b61777eb0dcdf19f5b50d6bcd3eaf014ab68))
+
+- Skillize crystal structure tools
+  ([`bfdf048`](https://github.com/nlz25/PFD_Agent/commit/bfdf048b3eed6aa84b1645d2d73809147d22e9ef))
+
+- Skillize VASP
+  ([`be28867`](https://github.com/nlz25/PFD_Agent/commit/be2886759df6023d2ef409362588b5886f489eea))
+
+- Update README
+  ([`8d4c3d7`](https://github.com/nlz25/PFD_Agent/commit/8d4c3d722798a0d2f965a39561723bb2384e9311))
+
+
 ## v1.0.9 (2026-03-23)
 
 ### Bug Fixes
