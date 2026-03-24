@@ -27,11 +27,11 @@ PID_FILE = LOG_DIR / "mcp_servers.json"
 
 # Server configurations: name -> (port, script_path)
 SERVERS = {
-    "database": (50001, PROJECT_ROOT / "tools/database/server.py"),
+    #"database": (50001, PROJECT_ROOT / "tools/database/server.py"),
     "dpa": (50002, PROJECT_ROOT / "tools/dpa/server.py"),
     "abacus": (50003, PROJECT_ROOT / "tools/abacus/server.py"),
-    "quest": (50004, PROJECT_ROOT / "tools/quest/server.py"),
-    "vasp": (50005, PROJECT_ROOT / "tools/vasp/server.py"),
+    #"quest": (50004, PROJECT_ROOT / "tools/quest/server.py"),
+    #"vasp": (50005, PROJECT_ROOT / "tools/vasp/server.py"),
     "mattergen": (50006, PROJECT_ROOT / "tools/mattergen/server.py"),
 }
 
