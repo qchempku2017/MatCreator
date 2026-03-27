@@ -38,3 +38,19 @@ def update_memory(new_entries: str) -> str:
         Confirmation message.
     """
     return write_memory("\n" + new_entries)
+
+
+def read_memory() -> str:
+    """Read the full contents of MEMORY.md and return them.
+
+    Call this at the start of a new task or before planning to recall past
+    lessons, known workflows, and project-specific context accumulated across
+    sessions.
+
+    Returns:
+        The full text of MEMORY.md, or a message indicating it is empty.
+    """
+    content = load_memory()
+    if not content.strip():
+        return "Memory is empty. No past context available."
+    return content

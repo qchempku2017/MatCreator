@@ -30,7 +30,7 @@ from .skill import (
     _load_skill_registry,
     Skill,
 )
-from .memory import load_memory, update_memory
+from .memory import update_memory, read_memory
 from .workspace_tools import (
     write_workspace_file,
     read_workspace_file,
@@ -184,7 +184,6 @@ _MATCREATOR_INSTRUCTION = """
 You are MatCreator, an AI assistant for computational materials science workflows.
 
 ## Context
-- Memory: {memory}
 - Available skills: {skills}
 - Available guides: {guides}
 - Goal: {goal}
@@ -194,7 +193,7 @@ You are MatCreator, an AI assistant for computational materials science workflow
 - Summarize: {summarize}
 
 ## Default workflow
-1. Understand the user's goal by `user_intent`. Ask clarifying questions if needed.
+1. Understand the user's goal by `user_intent`. Call `read_memory` to recall past context before planning.
 2. Use `plan_builder_agent` to draft a clear plan. Show it to the user.
 3. **Before executing the plan**, always wait for explicit confirmation (e.g. "yes", "ok", "proceed").
 4. For each plan step, call `load_skill_context(skill_name)` first, then follow the
@@ -215,9 +214,21 @@ You are MatCreator, an AI assistant for computational materials science workflow
 
 def before_agent_callback(callback_context: CallbackContext) -> None:
     """Refresh memory, skills, and guides in session state each invocation."""
-    callback_context.state["memory"] = load_memory()
-
+    state = callback_context._invocation_context.session.state
+    for key, default in [
+        ("plan", None),
+        ("goal", None),
+        ("skills", None),
+        ("guides", None),
+        ("active_skill", None),
+        ("skill_instruction", None),
+        ("summarize", None),
+    ]:
+        if key not in state:
+            callback_context.state[key] = default
+    
     skill_summaries = list_skill_name_descriptions()
+    logger.info("Loaded skill summaries: %s", skill_summaries)
     callback_context.state["skills"] = "\n".join(
         f"- {item['name']}: {item['description']}" for item in skill_summaries
     ) if skill_summaries else "No skills available."
@@ -227,9 +238,6 @@ def before_agent_callback(callback_context: CallbackContext) -> None:
         f"- {g['name']}: {g['description']} (tags: {g['tags']})"
         for g in guide_meta
     ) if guide_meta else "No guides available."
-
-    callback_context.state.setdefault("active_skill", "none")
-    callback_context.state.setdefault("skill_instruction", "No skill loaded yet. Call load_skill_context before executing a domain step.")
 
     return None
 
@@ -285,6 +293,7 @@ thinking_agent = LlmAgent(
         FunctionTool(load_skill_context),
         FunctionTool(load_guide_content),
         FunctionTool(load_skill_content),
+        FunctionTool(read_memory),
         update_memory,
         FunctionTool(init_workspace_tool),
         FunctionTool(list_workspace_skills),
@@ -293,7 +302,7 @@ thinking_agent = LlmAgent(
         FunctionTool(read_workspace_file),
         FunctionTool(run_python),
         FunctionTool(run_bash),
-        FunctionTool(run_python_file),
+        #FunctionTool(run_python_file),
         *TOOLSETS,
     ],
     before_agent_callback=before_agent_callback,

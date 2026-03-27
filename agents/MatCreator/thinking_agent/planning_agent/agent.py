@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from ...constants import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
 from ..skill import _load_skill_registry, load_guide_content, load_skill_content
+from ..memory import read_memory
 
 _model_name = os.environ.get("LLM_MODEL", LLM_MODEL)
 _model_api_key = os.environ.get("LLM_API_KEY", LLM_API_KEY)
@@ -117,7 +118,6 @@ You are a plan-builder. Produce an execution plan for the given goal.
 Goal: {goal}
 Available skills: {skills}
 Guide summaries: {guides}
-Memory: {memory}
 Current plan (if updating): {plan}
 
 Output ONLY a JSON object — no markdown fences, no extra text:
@@ -175,6 +175,7 @@ plan_builder_agent = LlmAgent(
     tools=[
         FunctionTool(load_guide_content),
         FunctionTool(load_skill_content),
+        #FunctionTool(read_memory),
     ],
     before_tool_callback=_plan_builder_before_tool,
     after_tool_callback=_plan_builder_after_tool,
