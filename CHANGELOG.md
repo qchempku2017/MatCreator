@@ -2,6 +2,20 @@
 
 <!-- version list -->
 
+## v1.0.12 (2026-03-27)
+
+### Bug Fixes
+
+- Demolish execution agent
+  ([`1b0afe4`](https://github.com/nlz25/PFD_Agent/commit/1b0afe447e92b79a1e5f6be56faa02ed42a0d447))
+
+- Update central agent
+  ([`e4f640e`](https://github.com/nlz25/PFD_Agent/commit/e4f640ee996c933b48ffa7f7faa2d2ebb7427589))
+
+- Update memory
+  ([`9d4adbb`](https://github.com/nlz25/PFD_Agent/commit/9d4adbb7e148e03c3374b5a8f048f68b534da7fe))
+
+
 ## v1.0.11 (2026-03-25)
 
 ### Bug Fixes
