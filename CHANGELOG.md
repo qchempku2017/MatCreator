@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.0.14 (2026-03-29)
+
+### Bug Fixes
+
+- Add util_tools
+  ([`5811cb6`](https://github.com/nlz25/PFD_Agent/commit/5811cb68e56b15c6bf0fd37df82cada804ac1ceb))
+
+
 ## v1.0.13 (2026-03-29)
 
 ### Bug Fixes
