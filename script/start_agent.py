@@ -121,9 +121,12 @@ def web(host, port, workspace, log_level, verbose, reload_agents, reload):
 
 @main.command("api-server")
 @add_shared_options
+@click.option("--reload-agents", is_flag=True, default=False,
+              help="Enable live reload when agent files change.")
 @click.option("--reload", is_flag=True, default=False,
               help="Enable auto-reload for the FastAPI server.")
-def api_server(host, port, workspace, log_level, verbose, reload):
+def api_server(host, port, workspace, log_level, reload_agents,
+               verbose, reload):
     """Launch the ADK API server (used by the Streamlit app)."""
     _setup_workspace(workspace)
 
@@ -136,6 +139,9 @@ def api_server(host, port, workspace, log_level, verbose, reload):
     ]
     if reload:
         cmd.append("--reload")
+        
+    if reload_agents:
+        cmd.append("--reload_agents")
 
     _run(cmd)
 
