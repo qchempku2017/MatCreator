@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.0.19 (2026-04-03)
+
+### Bug Fixes
+
+- Display function call in UI
+  ([`eb6f47f`](https://github.com/nlz25/PFD_Agent/commit/eb6f47fe515dcea8eaeaff14f68b4f2032caf2e1))
+
+
 ## v1.0.18 (2026-04-02)
 
 ### Bug Fixes
