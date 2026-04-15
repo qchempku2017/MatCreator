@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.1.1 (2026-04-15)
+
+### Bug Fixes
+
+- Restore the bash tools for thinking agent
+  ([`aa485a9`](https://github.com/nlz25/PFD_Agent/commit/aa485a97a196b06da8948f5c384866870fe7c765))
+
+
 ## v1.1.0 (2026-04-15)
 
 ### Bug Fixes
