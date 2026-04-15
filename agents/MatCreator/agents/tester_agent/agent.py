@@ -20,9 +20,8 @@ from google.adk.skills import models
 from google.adk.tools import skill_toolset
 from ...skill import ALL_SKILLS, ALL_SKILLS_TOOLSET, refresh_skills
 from ...constants import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
-from ..thinking_agent.workspace_tools import (
+from ...tools.workspace_tools import (
     create_skill,
-    list_workspace_skills,
     read_workspace_file,
     run_bash,
     run_python,

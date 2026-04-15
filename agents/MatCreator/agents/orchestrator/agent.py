@@ -30,6 +30,8 @@ from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event
 from pydantic import Field
 
+from ...workspace import init_session_workdir
+
 logger = logging.getLogger(__name__)
 
 
@@ -74,6 +76,11 @@ class PlanningExecutionOrchestrator(BaseAgent):
         self, ctx: InvocationContext
     ) -> AsyncGenerator[Event, None]:
         state = ctx.session.state
+
+        if not state.get("session_workdir_initialized"):
+            init_session_workdir(ctx.session.id)
+            state["session_id"] = ctx.session.id
+            state["session_workdir_initialized"] = True
 
         while True:
             # ── Planning phase (always runs first) ───────────────────────────

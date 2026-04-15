@@ -24,13 +24,13 @@ from google.adk.tools.tool_context import ToolContext
 from ...constants import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
 from ..thinking_agent.agent import load_skill_context, clear_current_skill
 from ..thinking_agent.trajectory import append_trajectory_entry
-from ..thinking_agent.workspace_tools import (
+from ...tools.workspace_tools import (
     read_workspace_file,
     run_bash,
     run_python,
     write_workspace_file,
 )
-from ...tools import TOOLSETS
+#from ...tools import TOOLSETS
 
 logger = logging.getLogger(__name__)
 
@@ -193,13 +193,9 @@ execution_agent = LlmAgent(
         FunctionTool(clear_current_skill),
         FunctionTool(to_planner),
         AgentTool(_summarize_tool_agent),
-        #FunctionTool(load_guide_content),
-        #FunctionTool(load_skill_content),
-        #FunctionTool(write_workspace_file),
-        #FunctionTool(read_workspace_file),
         FunctionTool(run_python),
         FunctionTool(run_bash),
-        *TOOLSETS,
+        #*TOOLSETS,
     ],
     before_agent_callback=_exec_before_agent_callback,
     after_tool_callback=_exec_after_tool_callback,

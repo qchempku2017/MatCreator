@@ -32,10 +32,10 @@ from .planning import validate_plan
 from ...skill import ALL_SKILLS, ALL_SKILLS_TOOLSET, refresh_skills
 from ...guide import ALL_GUIDES
 from .memory import update_memory, read_memory
-from .workspace_tools import (
+from ...tools.workspace_tools import (
     init_workspace_tool,
 )
-#from ...tools import TOOLSETS
+
 
 logger = logging.getLogger(__name__)
 

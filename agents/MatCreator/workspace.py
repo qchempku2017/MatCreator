@@ -43,6 +43,16 @@ def workspace_memory_path() -> Path:
     return WORKSPACE_ROOT / "MEMORY.md"
 
 
+def get_session_workdir(session_id: str) -> Path:
+    return WORKSPACE_ROOT / "sessions" / session_id
+
+
+def init_session_workdir(session_id: str) -> Path:
+    d = get_session_workdir(session_id)
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 # ---------------------------------------------------------------------------
 # Initialisation
 # ---------------------------------------------------------------------------
