@@ -368,6 +368,16 @@ def after_tool_callback(
 # ---------------------------------------------------------------------------
 # MatCreator agent instance
 # ---------------------------------------------------------------------------
+from google.adk.agents import Agent
+from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
+
+remote_atom_sculptor = RemoteA2aAgent(
+    name="atom_sculptor",
+    description="Remote AtomSculptor orchestrator",
+    agent_card="http://127.0.0.1:8001/.well-known/agent-card.json",
+    use_legacy=False,
+)
+
 
 thinking_agent = LlmAgent(
     name="MatCreator",
@@ -401,4 +411,5 @@ thinking_agent = LlmAgent(
     ],
     before_agent_callback=before_agent_callback,
     after_tool_callback=after_tool_callback,
+    sub_agents=[remote_atom_sculptor],
 )
