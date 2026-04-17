@@ -37,14 +37,14 @@ This dataset layout is required by the upstream CGCNN prediction workflow.
 ## Common Pre-trained Models
 
 Common checkpoints in `pre-trained/` include:
-- `formation-energy-per-atom.pth.tar`
-- `final-energy-per-atom.pth.tar`
-- `band-gap.pth.tar`
-- `efermi.pth.tar`
-- `bulk-moduli.pth.tar`
-- `shear-moduli.pth.tar`
-- `poisson-ratio.pth.tar`
-- `semi-metal-classification.pth.tar`
+- `formation-energy-per-atom.pth.tar`: formation energy, unit `eV/atom`
+- `final-energy-per-atom.pth.tar`: absolute energy, unit `eV/atom`
+- `band-gap.pth.tar`: band gap, unit `eV`
+- `efermi.pth.tar`: Fermi energy, unit `eV/atom`
+- `bulk-moduli.pth.tar`: bulk modulus, unit `log(GPa)`
+- `shear-moduli.pth.tar`: shear modulus, unit `log(GPa)`
+- `poisson-ratio.pth.tar`: Poisson ratio, dimensionless
+- `semi-metal-classification.pth.tar`: classification model for metal vs semiconductor, no physical unit
 
 ## Prediction Command
 
@@ -65,9 +65,10 @@ python predict.py pre-trained/formation-energy-per-atom.pth.tar dataset_dir
 
 The upstream CGCNN run writes `test_results.csv` under `${CGCNN_ROOT}`. After prediction, always copy that file into the dataset_dir. For classification tasks, predicted values are probabilities between 0 and 1.
 
+If the predicted property is bulk modulus or shear modulus, convert the prediction to the standard unit `GPa` after inference.
+
 ## What to Report
 
 - The absolute path of the dataset directory
 - The exact model or checkpoint used
 - The absolute path of the generated `test_results.csv`
-- The prediction result for each crystal together with its CIF path or crystal ID
