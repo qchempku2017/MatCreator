@@ -22,7 +22,6 @@ Use this guide when the goal is to discover or optimize crystal materials by rep
 
 4. Convert relaxed structures for downstream property prediction
 - Convert or reorganize generated structures into the format required by the downstream predictor or validation workflow.
-- If the generated file contains multiple structures, split or reorganize it as needed for the next tool.
 - Report the converted output path or directory, the number of structures prepared, and the final structure format used.
 
 5. Predict properties and rank candidates
@@ -32,15 +31,13 @@ Use this guide when the goal is to discover or optimize crystal materials by rep
 
 6. Select the next round
 - Keep the top candidates and summarize why they were selected.
-- If the predicted structures and properties do not satisfy the target requirements, use the predicted structure-property data to finetune the MatterGen model for the next iteration.
-- Use the finetuned MatterGen model to generate improved candidates in the next round.
+- If the predicted structures and properties do not satisfy the target requirements, you may need to improve the workflow iteratively, for example by fine-tuning the model or using other approaches.
 
 7. Evaluation
 - Evaluate the screened structures with the S.U.N criteria, which can be carried out using the `mattergen-evaluation` skill.
 
 8. Optionally validate the final shortlist with DFT
 - After screening, optionally run DFT on a few top shortlisted candidates.
-- Report which candidates were validated, what workflow was used, and whether the screening results were confirmed.
 - If DFT strongly disagrees with the screening model, summarize the mismatch and decide whether another iteration is needed.
 
 ## Recommended Defaults
@@ -50,8 +47,3 @@ Use this guide when the goal is to discover or optimize crystal materials by rep
 - Reserve DFT for optional final validation of the best few candidates rather than for every iteration.
 - Keep a per-iteration summary table with generated structure paths, converted structure paths or directories, prediction model, predicted properties, and pass/fail status.
 
-## Decision Notes
-
-- Prefer `mattergen` when the search space is broad or open-ended.
-- Prefer batch prediction when many candidates are available.
-- If the user wants physically validated final candidates, finish the screening loop first and then optionally hand the shortlist to a DFT workflow for higher-fidelity validation.
