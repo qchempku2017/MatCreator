@@ -249,6 +249,59 @@ def run_python_file(relative_path: str) -> str:
     return output or "(no output)"
 
 
+def run_skill_script(
+    skill_name: str, script_name: str, args: str, tool_context: ToolContext
+) -> str:
+    """Execute a script bundled inside a skill's ``scripts/`` directory.
+
+    The script is resolved from ``<workspace>/skills/<skill_name>/scripts/<script_name>``
+    but executed with the current session's working directory as ``cwd``, so any
+    relative paths in *args* (e.g. ``--workdir ./train_001``) resolve against the
+    session workspace rather than the skill directory.
+
+    Args:
+        skill_name: Name of the skill that owns the script (e.g. ``"deepmd"``).
+        script_name: Filename inside the skill's ``scripts/`` directory
+            (e.g. ``"deepmd_prepare.py"``).
+        args: Command-line arguments to pass to the script as a single string
+            (e.g. ``"prepare-training --workdir ./train --train_data data.xyz"``).
+
+    Returns:
+        Combined stdout and stderr output, truncated to 4 000 characters.
+    """
+    from ..workspace import workspace_skills_dir
+
+    script_path = workspace_skills_dir() / skill_name / "scripts" / script_name
+    if not script_path.exists():
+        return (
+            f"Script not found: {script_path}\n"
+            f"Ensure skill '{skill_name}' has a scripts/{script_name} file."
+        )
+
+    cwd = None
+    session_id = tool_context.state.get("session_id")
+    if session_id:
+        cwd = str(get_session_workdir(session_id))
+
+    cmd = f"python {script_path} {args}"
+    try:
+        result = subprocess.run(
+            ["bash", "-c", cmd],
+            capture_output=True,
+            text=True,
+            timeout=_EXEC_TIMEOUT,
+            cwd=cwd,
+        )
+        output = result.stdout + result.stderr
+    except subprocess.TimeoutExpired as exc:
+        partial_out = (exc.output or b"").decode(errors="replace") if isinstance(exc.output, bytes) else (exc.output or "")
+        partial_err = (exc.stderr or b"").decode(errors="replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+        output = f"[TimeoutExpired after {_EXEC_TIMEOUT}s]\n" + partial_out + partial_err
+    if len(output) > 4000:
+        output = output[:4000] + "\n... [truncated]"
+    return output or "(no output)"
+
+
 # ---------------------------------------------------------------------------
 # Workspace initialisation tool (agent-callable)
 # ---------------------------------------------------------------------------

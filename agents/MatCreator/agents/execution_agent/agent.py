@@ -28,6 +28,7 @@ from ...tools.workspace_tools import (
     read_workspace_file,
     run_bash,
     run_python,
+    run_skill_script,
     write_workspace_file,
 )
 from ...tools.util_tools import show_plot, show_structure, show_artifact
@@ -195,6 +196,7 @@ execution_agent = LlmAgent(
         AgentTool(_summarize_tool_agent),
         FunctionTool(run_python),
         FunctionTool(run_bash),
+        FunctionTool(run_skill_script),
         FunctionTool(show_plot),
         FunctionTool(show_structure),
         FunctionTool(show_artifact),

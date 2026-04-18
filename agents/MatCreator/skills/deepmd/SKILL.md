@@ -23,10 +23,15 @@ Training and evaluation are split into two decoupled phases:
 | **Prepare** | `deepmd_prepare.py` | always local |
 | **Execute** | `dp` CLI | local **or** remote via bohr skill |
 
-Script location:
-```
-skills/deepmd/deepmd_prepare.py
-```
+Script: `deepmd_prepare.py` (in the skill's `scripts/` directory).
+
+Use the `run_skill_script` tool to execute it:
+- `skill_name`: `"deepmd"`
+- `script_name`: `"deepmd_prepare.py"`
+- `args`: the sub-command and flags as a single string
+
+The tool resolves the script from the skill directory and runs it with `cwd` set to the
+session working directory, so relative paths in arguments resolve correctly.
 
 ---
 
@@ -43,47 +48,32 @@ command to use in Phase 2.
 
 ### 1a. Train from scratch
 
-```bash
-python skills/deepmd/deepmd_prepare.py prepare-training \
-    --workdir    <workdir>             \
-    --train_data file1.xyz [file2.xyz ...] \
-    [--numb_steps        1000]         \
-    [--rcut              6.0]          \
-    [--rcut_smth         0.5]          \
-    [--descriptor_neuron 25 50 100]    \
-    [--neuron            240 240 240]  \
-    [--split_ratio       0.1]          \
-    [--type_map          Fe Ni Cu ...] \
-    [--impl              pytorch]      \
-    [--mixed_type]                     \
-    [--seed              42]
+```
+run_skill_script(
+    skill_name="deepmd",
+    script_name="deepmd_prepare.py",
+    args="prepare-training --workdir <workdir> --train_data file1.xyz [file2.xyz ...] [--numb_steps 1000] [--rcut 6.0] [--rcut_smth 0.5] [--descriptor_neuron 25 50 100] [--neuron 240 240 240] [--split_ratio 0.1] [--type_map Fe Ni Cu ...] [--impl pytorch] [--mixed_type] [--seed 42]"
+)
 ```
 
 ### 1b. Finetune a DPA model (single-task)
 
-```bash
-python skills/deepmd/deepmd_prepare.py prepare-finetune \
-    --workdir    <workdir>             \
-    --train_data file1.xyz [...]       \
-    --base_model /path/to/model.pt     \
-    [--head      <branch_name>]        \
-    [--numb_steps 500]                 \
-    [--split_ratio 0.1]                \
-    [--type_map   Fe Ni ...]           \
-    [--copy_model]      # required when submitting to Bohrium
+```
+run_skill_script(
+    skill_name="deepmd",
+    script_name="deepmd_prepare.py",
+    args="prepare-finetune --workdir <workdir> --train_data file1.xyz [...] --base_model /path/to/model.pt [--head <branch_name>] [--numb_steps 500] [--split_ratio 0.1] [--type_map Fe Ni ...] [--copy_model]"
+)
 ```
 
 ### 1c. Finetune a DPA model (multi-task)
 
-```bash
-python skills/deepmd/deepmd_prepare.py prepare-finetune-multitask \
-    --workdir    <workdir>                              \
-    --base_model /path/to/model.pt                      \
-    --task_data  task1:file1.xyz,file2.xyz  task2:file3.xyz \
-    [--numb_steps 500]                                  \
-    [--neuron     240 240 240]                          \
-    [--model_prob 1.0]                                  \
-    [--copy_model]      # required when submitting to Bohrium
+```
+run_skill_script(
+    skill_name="deepmd",
+    script_name="deepmd_prepare.py",
+    args="prepare-finetune-multitask --workdir <workdir> --base_model /path/to/model.pt --task_data task1:file1.xyz,file2.xyz task2:file3.xyz [--numb_steps 500] [--neuron 240 240 240] [--model_prob 1.0] [--copy_model]"
+)
 ```
 
 **Contents of `<workdir>` after preparation:**
@@ -161,13 +151,12 @@ Use the `convert-data` sub-command to convert any ASE-readable format first.
 
 ### 3a. Convert test data to deepmd/npy
 
-```bash
-python skills/deepmd/deepmd_prepare.py convert-data \
-    --data   test.extxyz [test2.extxyz ...]  \
-    --outdir ./test_data                     \
-    [--mixed_type]                           \
-    [--head  <head_name>]                    \
-    [--nframes 200]
+```
+run_skill_script(
+    skill_name="deepmd",
+    script_name="deepmd_prepare.py",
+    args="convert-data --data test.extxyz [test2.extxyz ...] --outdir ./test_data [--mixed_type] [--head <head_name>] [--nframes 200]"
+)
 ```
 
 The command prints a JSON result containing:
@@ -241,13 +230,12 @@ Submission uses the `dpdisp` skill (DPDispatcher) with `BohriumContext`. The `bo
 
 Always use `--copy_model` for finetune jobs so the model file is a regular file inside `<workdir>` (dpdispatcher cannot upload symlinks).
 
-```bash
-python skills/deepmd/deepmd_prepare.py prepare-finetune \
-    --workdir    ./train_001          \
-    --train_data data.extxyz          \
-    --base_model /models/DPA2.pt      \
-    --numb_steps 2000                 \
-    --copy_model
+```
+run_skill_script(
+    skill_name="deepmd",
+    script_name="deepmd_prepare.py",
+    args="prepare-finetune --workdir ./train_001 --train_data data.extxyz --base_model /models/DPA2.pt --numb_steps 2000 --copy_model"
+)
 ```
 
 ### Step 2 — Generate submission.template.json

@@ -4,7 +4,7 @@ description: Skills for VASP DFT calculations — input preparation, remote subm
 metadata:
   tools:
     - run_bash
-    - run_python_file
+    - run_skill_script
   dependent_skills:
     - dpdisp
   tags:
@@ -27,7 +27,18 @@ One script handles VASP-specific work; job submission is now delegated to the `d
 | `vasp_tools.py` | Prepare input files; collect / read results |
 | `skills/dpdisp/` | Submit prepared directories as jobs via DPDispatcher (see `dpdisp-submit` skill) |
 
-`vasp_tools.py` lives alongside `config.yaml` and `.env`.
+Script: `vasp_tools.py` (in the skill's `scripts/` directory).
+
+Use the `run_skill_script` tool to execute it:
+- `skill_name`: `"vasp"`
+- `script_name`: `"vasp_tools.py"`
+- `args`: the sub-command and flags as a single string
+
+The tool resolves the script from the skill directory and runs it with `cwd` set to the
+session working directory, so relative paths in arguments resolve correctly.
+
+`config.yaml` lives alongside the script in the skill's directory and is loaded automatically.
+
 Every command prints JSON to stdout and exits 0 on success, 1 on error.
 
 > **Note:** Submission is now handled by the `dpdisp-submit` skill, which supports both Bohrium and standard Slurm clusters. The previous `bohr` skill and `bohrium_submit.py` are deprecated for new workflows.
@@ -67,13 +78,12 @@ All `prepare_*` commands return:
 
 Prepare structural relaxation (IBRION=2, ISIF=3, NSW=200).
 
-```bash
-python vasp_tools.py prepare_relaxation \
-    --structure <path.extxyz|path.vasp> \
-    [--frames 0 1 2] \
-    [--kpoints NX NY NZ] \
-    [--incar_tags '{"ENCUT": 600}'] \
-    [--potcar_map '{"Bi": "Bi_d"}']
+```
+run_skill_script(
+    skill_name="vasp",
+    script_name="vasp_tools.py",
+    args="prepare_relaxation --structure <path.extxyz|path.vasp> [--frames 0 1 2] [--kpoints NX NY NZ] [--incar_tags '{\"ENCUT\": 600}'] [--potcar_map '{\"Bi\": \"Bi_d\"}']"
+)
 ```
 
 - `--structure`: structure file to read. Supported formats:
@@ -88,13 +98,12 @@ python vasp_tools.py prepare_relaxation \
 
 Prepare a self-consistent field calculation (NSW=0, IBRION=-1).
 
-```bash
-python vasp_tools.py prepare_scf \
-    --structure <path.extxyz|path.vasp> \
-    [--frames 0 1 2] \
-    [--kpoints NX NY NZ] \
-    [--soc] \
-    [--incar_tags '{"ENCUT": 600}']
+```
+run_skill_script(
+    skill_name="vasp",
+    script_name="vasp_tools.py",
+    args="prepare_scf --structure <path.extxyz|path.vasp> [--frames 0 1 2] [--kpoints NX NY NZ] [--soc] [--incar_tags '{\"ENCUT\": 600}']"
+)
 ```
 
 - `--structure`: structure file to read. Supported formats:
@@ -112,13 +121,12 @@ python vasp_tools.py prepare_scf \
 Prepare a non-self-consistent band-structure calculation along a k-path.
 Requires completed SCF directories that contain `CONTCAR` and `CHGCAR`.
 
-```bash
-python vasp_tools.py prepare_nscf_kpath \
-    --scf_dirs <scf_dir1> [<scf_dir2> ...] \
-    [--kpath GMKG] \
-    [--n_kpoints 16] \
-    [--soc] \
-    [--incar_tags '{"NBANDS": 48}']
+```
+run_skill_script(
+    skill_name="vasp",
+    script_name="vasp_tools.py",
+    args="prepare_nscf_kpath --scf_dirs <scf_dir1> [<scf_dir2> ...] [--kpath GMKG] [--n_kpoints 16] [--soc] [--incar_tags '{\"NBANDS\": 48}']"
+)
 ```
 
 - `--kpath`: explicit path string (e.g. `GMKG`). Default: auto from pymatgen `HighSymmKpath`.
@@ -132,12 +140,12 @@ python vasp_tools.py prepare_nscf_kpath \
 Prepare a non-self-consistent uniform-mesh calculation (for DOS).
 Requires completed SCF directories.
 
-```bash
-python vasp_tools.py prepare_nscf_uniform \
-    --scf_dirs <scf_dir1> [<scf_dir2> ...] \
-    [--kpoints NX NY NZ] \
-    [--soc] \
-    [--incar_tags '{"NEDOS": 2000}']
+```
+run_skill_script(
+    skill_name="vasp",
+    script_name="vasp_tools.py",
+    args="prepare_nscf_uniform --scf_dirs <scf_dir1> [<scf_dir2> ...] [--kpoints NX NY NZ] [--soc] [--incar_tags '{\"NEDOS\": 2000}']"
+)
 ```
 
 - Default k-mesh: auto KPPRA density 100.
@@ -149,9 +157,12 @@ python vasp_tools.py prepare_nscf_uniform \
 
 Parse `OUTCAR` files and write all frames into a single extxyz (via dpdata).
 
-```bash
-python vasp_tools.py collect_results \
-    --dirs <calc_dir1> [<calc_dir2> ...]
+```
+run_skill_script(
+    skill_name="vasp",
+    script_name="vasp_tools.py",
+    args="collect_results --dirs <calc_dir1> [<calc_dir2> ...]"
+)
 ```
 
 Returns:
@@ -165,10 +176,12 @@ Returns:
 
 Read `vasprun.xml` / `OUTCAR` and return key scalar results as JSON.
 
-```bash
-python vasp_tools.py read_results \
-    --calc_type <relaxation|scf|nscf> \
-    --calc_dir  <calc_dir>
+```
+run_skill_script(
+    skill_name="vasp",
+    script_name="vasp_tools.py",
+    args="read_results --calc_type <relaxation|scf|nscf> --calc_dir <calc_dir>"
+)
 ```
 
 | calc_type | Returned fields |
@@ -261,61 +274,51 @@ Append or adjust fields for SCF/NSCF as needed (e.g., add `CHGCAR`, `WAVECAR` to
 
 ## End-to-end example: relaxation → SCF → band structure
 
-```bash
+```
 # 1. Prepare relaxation
-RELAX=$(python vasp_tools.py prepare_relaxation --structure Al.extxyz)
-RELAX_DIRS=$(echo $RELAX | python -c "import sys,json; print(' '.join(json.load(sys.stdin)['calc_dir_list'])))
+run_skill_script(skill_name="vasp", script_name="vasp_tools.py",
+    args="prepare_relaxation --structure Al.extxyz")
 
 # 2. Generate submission.template.json for relaxation (see above for schema)
 #    (Repeat for each calc_dir as a task in task_list)
 
 # 3. Substitute environment variables
-envsubst '${BOHRIUM_USERNAME} ${BOHRIUM_PASSWORD} ${BOHRIUM_PROJECT_ID} ${BOHRIUM_VASP_MACHINE} ${BOHRIUM_VASP_IMAGE}' < submission.template.json > submission.json
-
-# 4. Validate and submit
-uv run -m json.tool submission.json >/dev/null
-uvx --with dpdispatcher dargs check -f dpdispatcher.entrypoints.submit.submission_args submission.json
-uvx --from dpdispatcher --with oss2 dpdisp submit submission.json
+# 4. Validate and submit (via run_bash)
 
 # 5. Read relaxation results
-python vasp_tools.py read_results --calc_type relaxation --calc_dir <relax_dir>
+run_skill_script(skill_name="vasp", script_name="vasp_tools.py",
+    args="read_results --calc_type relaxation --calc_dir <relax_dir>")
 
-# 6. Prepare SCF from relaxed structure (CONTCAR → extxyz conversion needed, or pass CONTCAR directly)
-SCF=$(python vasp_tools.py prepare_scf --structure Al_relaxed.extxyz)
-SCF_DIRS=$(echo $SCF | python -c "import sys,json; print(' '.join(json.load(sys.stdin)['calc_dir_list'])))
+# 6. Prepare SCF from relaxed structure
+run_skill_script(skill_name="vasp", script_name="vasp_tools.py",
+    args="prepare_scf --structure Al_relaxed.extxyz")
 
-# 7. Repeat submission steps for SCF (adjust forward/backward files as needed, add CHGCAR/WAVECAR to backward_files for SOC)
+# 7. Repeat submission steps for SCF
 
 # 8. Prepare NSCF k-path from SCF output
-NSCF=$(python vasp_tools.py prepare_nscf_kpath --scf_dirs $SCF_DIRS)
-NSCF_DIRS=$(echo $NSCF | python -c "import sys,json; print(' '.join(json.load(sys.stdin)['calc_dir_list'])))
+run_skill_script(skill_name="vasp", script_name="vasp_tools.py",
+    args="prepare_nscf_kpath --scf_dirs <scf_dir>")
 
 # 9. Repeat submission steps for NSCF
 
 # 10. Read NSCF results (band gap, CBM/VBM)
-python vasp_tools.py read_results --calc_type nscf --calc_dir <nscf_dir>
+run_skill_script(skill_name="vasp", script_name="vasp_tools.py",
+    args="read_results --calc_type nscf --calc_dir <nscf_dir>")
 ```
 
 ---
 
 ## Configuration file (config.yaml)
 
-`config.yaml` lives in the same directory as `vasp_tools.py`. It controls:
+`config.yaml` lives in the skill's `scripts/` directory alongside `vasp_tools.py`. It controls:
 
 - `work_dir` — where all calculation subdirectories are created (default `/tmp/vasp_server`).
 - `VASP_default_INCAR` — one sub-key per preset (`relaxation`, `scf_nsoc`, `scf_soc`, `nscf_nsoc`, `nscf_soc`).
 
 **When asked about default INCAR settings, read `config.yaml` directly** — do not guess from memory, as the user may have edited it.
 
-```bash
-# Show the full config
-cat "$(dirname $(which python))"/../skills/vasp/config.yaml
-# Or read it in Python
-python -c "import yaml; print(yaml.dump(yaml.safe_load(open('config.yaml'))))"
-```
-
 To override individual tags for a single run without editing the file, use `--incar_tags`:
-```bash
+```
 --incar_tags '{"ENCUT": 600, "EDIFF": 1e-6}'
 ```
 
