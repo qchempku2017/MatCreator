@@ -64,7 +64,7 @@ A simple web UI that supports artifact upload/download, structure visualization 
 ```bash
 #We strongly recommend running the following script in the background and saving the runtime logs.
  
-nohup python script/start_agent.py api-server >> server.log &
+nohup matcreator api-server >> server.log &
 nohup streamlit run web/streamlit_app.py >> web.log &
 ```
 ![The web UI for MatCreator](docs/images/agent_plot.png)
@@ -94,10 +94,10 @@ MATCLAW_WORKSPACE=/data/my_workspace matcreator run -p "Build a silicon FCC stru
 
 Each run creates a session directory under `<workspace>/sessions/<session-id>/` where any files produced by the agent are saved.
 
-#### Starting agent (old style)
+#### Default adk web server (old style)
 
 ```bash
-python script/start_agent.py web
+matcreator run web
 ```
 This would set up the MatCreator agent network through the default `adk web` server. You can tune the LLM model and communication settings for the agents.
 
