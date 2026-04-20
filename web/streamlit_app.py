@@ -1018,7 +1018,12 @@ if st.session_state.view_mode == "session":
         float_parent()
         st.subheader("Session Files")
         if st.session_state.session_id:
-            session_workdir = WORKSPACE_ROOT / "sessions" / st.session_state.session_id
+            _env_session_dir = os.environ.get("MATCLAW_SESSION_DIR", "")
+            session_workdir = (
+                Path(_env_session_dir).expanduser().resolve()
+                if _env_session_dir
+                else WORKSPACE_ROOT / "sessions" / st.session_state.session_id
+            )
             if st.button("🔄 Refresh", key="refresh_session_files"):
                 st.rerun()
             if session_workdir.exists():
