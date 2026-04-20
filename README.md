@@ -15,6 +15,22 @@ source .venv/bin/activate
 uv pip install -e .
 ```
 
+### Configuration
+
+After installation, tell the CLI where the project root lives:
+
+```bash
+# Run from the repo directory
+matcreator init .
+
+# Or specify an absolute path
+matcreator init /path/to/PFD-Agent
+```
+
+This writes `~/.matcreator/config.yaml` with the `project_root` path, so the
+CLI can locate the `agents/` directory even when installed into site-packages.
+You can also set the `MATCREATOR` environment variable instead.
+
 ### Recommended Workflow: WSL + uv for Virtual Environment Deployment
 
 We highly recommend using WSL (Windows Subsystem for Linux) with uv to deploy local development virtual environments. WSL provides a native Linux environment seamlessly integrated with Windows, enabling access to Linux tools. As a fast, lightweight Python package manager, uv creates isolated environments to avoid dependency conflicts, ideal for Python applications like Streamlit.
@@ -127,11 +143,11 @@ uv run server.py --port 50001
 
 ### Customize skills
 
-Skills are Markdown files with a YAML frontmatter block (declaring `name`, `description`, `tools`, and `dependent_skills`) followed by a plain-text instruction body. MatCreator loads skills from two locations in order:
+Skills are Markdown files with a YAML frontmatter block (declaring `name`, `description`, `tools`, and `dependent_skills`) followed by a plain-text instruction body. The active loader discovers any workspace directory that contains a `SKILL.md` file, including nested directories such as `skills/mattergen/mattergen_generation/SKILL.md`. MatCreator loads skills from two locations in order:
 
 1. **Built-in skills** — shipped with the package under `agents/MatCreator/knowledge/skills/`. Skills can be placed as flat `<name>.md` files or in a subdirectory `<name>/<name>.md`; the subdirectory form takes precedence.
 2. **Workspace overlay** — your personal skills under `$MATCLAW_WORKSPACE/skills/` (defaults to `.workspace/` in the project root). Any skill here with the same name overrides the built-in version.
 
-To customize a skill manually, copy its `.md` file into your workspace `skills/` directory and edit it. To add a new skill, create a new `skills/<name>/<name>.md` file following the same frontmatter format.
+To customize a skill manually, copy its skill directory into your workspace `skills/` directory and edit the contained `SKILL.md`. To add a new skill, create a new `skills/<name>/SKILL.md` file following the same frontmatter format.
 
 The agent can also create and update skills on its own. During a session, the thinking agent can call built-in tools to scaffold a new skill file, write updated content to an existing one, or list what skills are currently available — letting the system accumulate knowledge automatically over time.

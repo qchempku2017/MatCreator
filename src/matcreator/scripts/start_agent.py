@@ -5,11 +5,14 @@ Usage:
     matcreator [OPTIONS] COMMAND [ARGS]
 
 Commands:
+    init        Set the project root path (saved to ~/.matcreator/config.yaml).
     web         Launch the ADK web UI.
     api-server  Launch the ADK API server (used by the Streamlit app).
     run         Run the agent non-interactively on a single prompt.
 
 Examples:
+    matcreator init .
+    matcreator init /path/to/PFD-Agent
     matcreator web
     matcreator web --reload-agents --port 8080
     matcreator api-server
@@ -26,10 +29,56 @@ import sys
 import time
 from pathlib import Path
 
+import yaml
 import click
 
-PROJECT_ROOT = Path(__file__).parent.parent.absolute()
+_CONFIG_PATH = Path("~/.matcreator/config.yaml").expanduser()
+
+
+def _resolve_project_root() -> tuple[Path, bool]:
+    """Resolve the MatCreator project root.
+
+    Resolution order (first match wins):
+      1. ``MATCREATOR`` environment variable
+      2. ``project_root`` in ``~/.matcreator/config.yaml``
+      3. Fallback: derive from ``__file__`` (works for editable / source installs)
+
+    Returns (path, explicitly_configured).
+    """
+    # 1. Environment variable
+    env_val = os.environ.get("MATCREATOR")
+    if env_val:
+        return Path(env_val).expanduser().resolve(), True
+
+    # 2. Config file
+    if _CONFIG_PATH.is_file():
+        with open(_CONFIG_PATH) as fh:
+            cfg = yaml.safe_load(fh) or {}
+        cfg_val = cfg.get("project_root")
+        if cfg_val:
+            return Path(cfg_val).expanduser().resolve(), True
+
+    # 3. Fallback: __file__-based (src/matcreator/scripts/start_agent.py → repo root)
+    return Path(__file__).resolve().parent.parent.parent.parent, False
+
+
+PROJECT_ROOT, _PROJECT_ROOT_CONFIGURED = _resolve_project_root()
 AGENTS_DIR = PROJECT_ROOT / "agents"
+
+
+def _warn_if_unconfigured() -> None:
+    """Emit a warning when the project root was not explicitly configured."""
+    if not _PROJECT_ROOT_CONFIGURED:
+        click.secho(
+            "Warning: project root is not configured. "
+            "Using fallback path: " + str(PROJECT_ROOT),
+            fg="yellow", err=True,
+        )
+        click.secho(
+            "Run 'matcreator init <project-dir>' or set the MATCREATOR "
+            "environment variable.",
+            fg="yellow", err=True,
+        )
 
 # Shared options applied to both subcommands
 _shared_options = [
@@ -94,6 +143,43 @@ def main():
     """MatCreator CLI — manage and run the MatCreator agent."""
 
 
+@main.command("init")
+@click.argument("project_dir", default=".", type=click.Path(exists=True, file_okay=False))
+def init_cmd(project_dir):
+    """Set the project root path (saved to ~/.matcreator/config.yaml).
+
+    PROJECT_DIR defaults to the current directory. The path must contain an
+    ``agents/`` subdirectory.
+
+    \b
+    Examples:
+        matcreator init .
+        matcreator init /home/user/dev/PFD-Agent
+    """
+    root = Path(project_dir).expanduser().resolve()
+    agents = root / "agents"
+    if not agents.is_dir():
+        raise click.ClickException(
+            f"'{root}' does not look like a MatCreator project "
+            f"(missing agents/ directory)."
+        )
+
+    _CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    cfg = {}
+    if _CONFIG_PATH.is_file():
+        with open(_CONFIG_PATH) as fh:
+            cfg = yaml.safe_load(fh) or {}
+
+    cfg["project_root"] = str(root)
+
+    with open(_CONFIG_PATH, "w") as fh:
+        yaml.safe_dump(cfg, fh, default_flow_style=False)
+
+    click.echo(f"Project root saved to {_CONFIG_PATH}")
+    click.echo(f"  project_root: {root}")
+
+
 @main.command("web")
 @add_shared_options
 @click.option("--reload-agents", is_flag=True, default=False,
@@ -102,6 +188,7 @@ def main():
               help="Enable auto-reload for the FastAPI server.")
 def web(host, port, workspace, log_level, verbose, reload_agents, reload):
     """Launch the ADK web UI (browser-based chat interface)."""
+    _warn_if_unconfigured()
     _setup_workspace(workspace)
 
     cmd = [
@@ -128,6 +215,7 @@ def web(host, port, workspace, log_level, verbose, reload_agents, reload):
 def api_server(host, port, workspace, log_level, reload_agents,
                verbose, reload):
     """Launch the ADK API server (used by the Streamlit app)."""
+    _warn_if_unconfigured()
     _setup_workspace(workspace)
 
     cmd = [
@@ -164,6 +252,11 @@ async def run_agent_async(
 
     from google.adk.runners import InMemoryRunner
     from google.genai import types
+
+    # Make the top-level `agents` package importable.
+    _project_root = str(PROJECT_ROOT)
+    if _project_root not in sys.path:
+        sys.path.insert(0, _project_root)
 
     from agents.MatCreator.agent import app
 
@@ -248,6 +341,7 @@ async def run_agent_async(
               help="Maximum agent turns before stopping.")
 def run_cmd(workspace, prompt_text, prompt_file, output_format, output_file, max_turns):
     """Run the agent non-interactively on a single prompt."""
+    _warn_if_unconfigured()
     if prompt_text and prompt_file:
         raise click.UsageError("Use either -p/--prompt or -f/--prompt-file, not both.")
     if not prompt_text and not prompt_file:

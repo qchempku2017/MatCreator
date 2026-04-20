@@ -39,6 +39,34 @@ def _safe_workspace_path(relative: str) -> Path:
     return resolved
 
 
+def _resolve_skill_script_path(
+    skills_root: Path, skill_name: str, script_name: str
+) -> Path | None:
+    """Resolve a script path for flat or nested skill layouts.
+
+    Supported layouts:
+    - ``skills/<skill_name>/scripts/<script_name>``
+    - ``skills/**/<skill_name>/scripts/<script_name>``
+    """
+    direct_path = skills_root / skill_name / "scripts" / script_name
+    if direct_path.exists():
+        return direct_path
+
+    matches: list[Path] = []
+    for skill_md in skills_root.rglob("SKILL.md"):
+        skill_dir = skill_md.parent
+        if skill_dir.name != skill_name:
+            continue
+        candidate = skill_dir / "scripts" / script_name
+        if candidate.exists():
+            matches.append(candidate)
+
+    if not matches:
+        return None
+
+    return sorted(matches, key=lambda path: path.as_posix())[0]
+
+
 # ---------------------------------------------------------------------------
 # File tools
 # ---------------------------------------------------------------------------
@@ -79,20 +107,18 @@ def read_workspace_file(relative_path: str) -> str:
 def list_workspace_skills() -> str:
     """List all skills currently present in the workspace skills directory.
 
-    Returns a formatted string enumerating skills and their layout (flat or subdir).
+    Returns a formatted string enumerating all discovered ``SKILL.md`` bundles.
     """
     skills_dir = workspace_skills_dir()
     if not skills_dir.exists():
         return "No workspace skills directory found. Run init_workspace first."
 
     lines: list[str] = []
-    # Flat skills
-    for p in sorted(skills_dir.glob("*.md")):
-        lines.append(f"  [flat]   {p.stem}  →  {p.relative_to(skills_dir.parent)}")
-    # Subdir skills
-    for p in sorted(skills_dir.glob("*/*.md")):
-        if p.stem == p.parent.name:
-            lines.append(f"  [subdir] {p.stem}  →  {p.parent.relative_to(skills_dir.parent)}/")
+    for p in sorted(skills_dir.rglob("SKILL.md")):
+        rel_dir = p.parent.relative_to(skills_dir.parent)
+        depth = len(p.relative_to(skills_dir).parts) - 1
+        layout = "nested" if depth > 1 else "subdir"
+        lines.append(f"  [{layout}] {p.parent.name}  →  {rel_dir}/")
 
     if not lines:
         return "Workspace skills directory is empty."
@@ -119,7 +145,7 @@ def create_skill(
     description: str,
     instruction: str,
 ) -> str:
-    """Scaffold a new skill under ``$WORKSPACE/skills/<name>/<name>.md``.
+    """Scaffold a new skill under ``$WORKSPACE/skills/<name>/SKILL.md``.
 
     Creates the directory and markdown file.  Does NOT overwrite an existing
     skill — use ``write_workspace_file`` for updates.
@@ -133,7 +159,7 @@ def create_skill(
         Confirmation message with the path created, or an error if it exists.
     """
     skill_dir = workspace_skills_dir() / name
-    skill_file = skill_dir / f"{name}.md"
+    skill_file = skill_dir / "SKILL.md"
 
     if skill_file.exists():
         return (
@@ -254,10 +280,13 @@ def run_skill_script(
 ) -> str:
     """Execute a script bundled inside a skill's ``scripts/`` directory.
 
-    The script is resolved from ``<workspace>/skills/<skill_name>/scripts/<script_name>``
-    but executed with the current session's working directory as ``cwd``, so any
-    relative paths in *args* (e.g. ``--workdir ./train_001``) resolve against the
-    session workspace rather than the skill directory.
+    The script is resolved from either a flat skill layout such as
+    ``<workspace>/skills/<skill_name>/scripts/<script_name>`` or a nested skill
+    layout such as
+    ``<workspace>/skills/<group>/<skill_name>/scripts/<script_name>``.
+    It is executed with the current session's working directory as ``cwd``, so
+    any relative paths in *args* (e.g. ``--workdir ./train_001``) resolve
+    against the session workspace rather than the skill directory.
 
     Args:
         skill_name: Name of the skill that owns the script (e.g. ``"deepmd"``).
@@ -271,11 +300,13 @@ def run_skill_script(
     """
     from ..workspace import workspace_skills_dir
 
-    script_path = workspace_skills_dir() / skill_name / "scripts" / script_name
-    if not script_path.exists():
+    skills_root = workspace_skills_dir()
+    script_path = _resolve_skill_script_path(skills_root, skill_name, script_name)
+    if script_path is None:
         return (
-            f"Script not found: {script_path}\n"
-            f"Ensure skill '{skill_name}' has a scripts/{script_name} file."
+            f"Script not found for skill '{skill_name}': scripts/{script_name}\n"
+            f"Searched under: {skills_root}\n"
+            f"Ensure the skill has a scripts/{script_name} file."
         )
 
     cwd = None
