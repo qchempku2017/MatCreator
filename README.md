@@ -15,6 +15,22 @@ source .venv/bin/activate
 uv pip install -e .
 ```
 
+### Configuration
+
+After installation, tell the CLI where the project root lives:
+
+```bash
+# Run from the repo directory
+matcreator init .
+
+# Or specify an absolute path
+matcreator init /path/to/PFD-Agent
+```
+
+This writes `~/.matcreator/config.yaml` with the `project_root` path, so the
+CLI can locate the `agents/` directory even when installed into site-packages.
+You can also set the `MATCREATOR` environment variable instead.
+
 ### Recommended Workflow: WSL + uv for Virtual Environment Deployment
 
 We highly recommend using WSL (Windows Subsystem for Linux) with uv to deploy local development virtual environments. WSL provides a native Linux environment seamlessly integrated with Windows, enabling access to Linux tools. As a fast, lightweight Python package manager, uv creates isolated environments to avoid dependency conflicts, ideal for Python applications like Streamlit.
