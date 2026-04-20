@@ -369,6 +369,7 @@ def after_tool_callback(
 # MatCreator agent instance
 # ---------------------------------------------------------------------------
 
+
 thinking_agent = LlmAgent(
     name="MatCreator",
     model=LiteLlm(
