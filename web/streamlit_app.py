@@ -1015,7 +1015,17 @@ if st.session_state.view_mode == "session":
             st.info("👈 Create a session to start chatting")
 
     with plot_col:
-        float_parent()
+        float_parent(css="top: 3.5rem; overflow-y: auto; max-height: calc(100vh - 4rem);")
+
+        if st.session_state.selected_structure_path and os.path.exists(resolve_path(st.session_state.selected_structure_path)):
+            st.subheader("Structure Viewer")
+            st.caption(f"🔬 {os.path.basename(st.session_state.selected_structure_path)}")
+            visualize_structure(resolve_path(st.session_state.selected_structure_path), height=280, width=400)
+            if st.button("✖ Clear", key="clear_structure"):
+                st.session_state.selected_structure_path = None
+                st.rerun()
+            st.divider()
+
         st.subheader("Session Files")
         if st.session_state.session_id:
             _env_session_dir = os.environ.get("MATCLAW_SESSION_DIR", "")
@@ -1057,15 +1067,6 @@ if st.session_state.view_mode == "session":
                 st.info("Session working directory not created yet.")
         else:
             st.info("No active session.")
-
-        if st.session_state.selected_structure_path and os.path.exists(resolve_path(st.session_state.selected_structure_path)):
-            st.divider()
-            st.subheader("Structure Viewer")
-            st.caption(f"🔬 {os.path.basename(st.session_state.selected_structure_path)}")
-            visualize_structure(resolve_path(st.session_state.selected_structure_path))
-            if st.button("✖ Clear", key="clear_structure"):
-                st.session_state.selected_structure_path = None
-                st.rerun()
 
 # ==================== EVALUATION MODE: Sidebar & Main Content ====================
 elif st.session_state.view_mode == "evaluation":
