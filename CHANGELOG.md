@@ -2,6 +2,23 @@
 
 <!-- version list -->
 
+## v1.2.2 (2026-04-21)
+
+### Bug Fixes
+
+- Add custom session for CLI
+  ([`bdb2e07`](https://github.com/nlz25/PFD_Agent/commit/bdb2e0703f036b708b4794bc0113d6df03744a54))
+
+- Update app UI
+  ([`3e2c85d`](https://github.com/nlz25/PFD_Agent/commit/3e2c85d096932baf8dbc4a42398e205eaef32c30))
+
+- Update skill
+  ([`5d43e8a`](https://github.com/nlz25/PFD_Agent/commit/5d43e8a666b85457520c0634e2b381f4d7c46e57))
+
+- Version of a2a-sdk to 0.3.25
+  ([`bb65106`](https://github.com/nlz25/PFD_Agent/commit/bb65106016ef9ca1bbda1e498ba780619e69b5e7))
+
+
 ## v1.2.1 (2026-04-20)
 
 ### Bug Fixes
