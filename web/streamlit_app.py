@@ -234,6 +234,28 @@ def render_invocation(invocation_data):
                 render_content_parts(response_parts, role="assistant")
 
 
+def render_stream_timeline(container, timeline):
+    """Render streaming events in the exact order they arrive."""
+    with container.container():
+        for event in timeline:
+            event_type = event.get("type")
+
+            if event_type == "thought":
+                with st.expander("🤔 Thinking...", expanded=False):
+                    st.markdown(event.get("text", ""))
+
+            elif event_type == "function_call":
+                with st.expander(event.get("name", "Unknown"), expanded=False, icon="🔧"):
+                    st.json(event.get("args", {}))
+
+            elif event_type == "function_response":
+                with st.expander(event.get("name", "Unknown"), expanded=False, icon="📥"):
+                    st.json(event.get("response", {}))
+
+            elif event_type == "text":
+                st.markdown(event.get("text", ""))
+
+
 def visualize_structure(structure_path, height=400, width=600):
     """Visualize atomic structure using ASE and py3Dmol, with unit cell box."""
     try:
@@ -737,18 +759,12 @@ def send_message_sse(message, attachments=None):
                 st.error(f"Error: {response.text}")
                 return False
 
-            accumulated_thought = ""
             accumulated_content = ""
-            # {id: {name, args, response}} — built up as function call/response parts arrive
-            streaming_function_calls = {}
 
             with st.chat_message("agent"):
-                # Placeholders created lazily so nothing is rendered until data arrives
-                thought_expander_holder = st.empty()
-                fc_area = st.container()
-                content_area = st.empty()
-
-                thought_area = None  # created on first thought chunk
+                # Render every incoming part against one timeline to preserve temporal order.
+                timeline = []
+                timeline_holder = st.empty()
 
                 for line in response.iter_lines(decode_unicode=True):
                     if not line or not line.startswith("data: "):
@@ -760,33 +776,37 @@ def send_message_sse(message, attachments=None):
                         event = json.loads(data_str)
                         for p in event.get("content", {}).get("parts", []):
                             if p.get("thought", False):
-                                # Lazily create the thought expander on first thought chunk
-                                if thought_area is None:
-                                    thought_area = thought_expander_holder.expander("🤔 Thinking...", expanded=False).empty()
-                                accumulated_thought += p.get("text", "")
-                                thought_area.markdown(accumulated_thought)
+                                timeline.append({"type": "thought", "text": p.get("text", "")})
+                                render_stream_timeline(timeline_holder, timeline)
 
                             elif "functionCall" in p:
                                 fc = p["functionCall"]
-                                fc_id = fc.get("id") or fc.get("name", "")
-                                streaming_function_calls.setdefault(fc_id, {"name": fc.get("name", "Unknown"), "args": fc.get("args", {})})
-                                with fc_area:
-                                    with st.expander(fc.get("name", "Unknown"), expanded=False, icon="🔧"):
-                                        st.json(fc.get("args", {}))
+                                timeline.append({
+                                    "type": "function_call",
+                                    "id": fc.get("id"),
+                                    "name": fc.get("name", "Unknown"),
+                                    "args": fc.get("args", {}),
+                                })
+                                render_stream_timeline(timeline_holder, timeline)
 
                             elif "functionResponse" in p:
                                 fr = p["functionResponse"]
-                                fr_id = fr.get("id") or fr.get("name", "")
                                 resp = fr.get("response", {})
-                                fc_entry = streaming_function_calls.get(fr_id)
-                                fc_name = fc_entry["name"] if fc_entry else fr.get("name", "Unknown")
-                                with fc_area:
-                                    with st.expander(fc_name, expanded=False, icon="📥"):
-                                        st.json(resp)
+                                timeline.append({
+                                    "type": "function_response",
+                                    "id": fr.get("id"),
+                                    "name": fr.get("name", "Unknown"),
+                                    "response": resp,
+                                })
+                                render_stream_timeline(timeline_holder, timeline)
 
                             elif "text" in p:
                                 accumulated_content += p["text"]
-                                content_area.markdown(accumulated_content)
+                                if timeline and timeline[-1].get("type") == "text":
+                                    timeline[-1]["text"] = accumulated_content
+                                else:
+                                    timeline.append({"type": "text", "text": accumulated_content})
+                                render_stream_timeline(timeline_holder, timeline)
                     except json.JSONDecodeError:
                         continue
 
