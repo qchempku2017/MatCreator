@@ -2,6 +2,20 @@
 
 <!-- version list -->
 
+## v1.2.3 (2026-04-23)
+
+### Bug Fixes
+
+- Add resume tool for interrupted execution
+  ([`bacb2c0`](https://github.com/nlz25/PFD_Agent/commit/bacb2c09b188af07f5ab8d0951b77026647ab3b9))
+
+- Rescope summarize and intent tools
+  ([`b8d1070`](https://github.com/nlz25/PFD_Agent/commit/b8d107027a44349d93eed9eca6634f6462fc08bd))
+
+- Update UI for better streaming
+  ([`a60a2ad`](https://github.com/nlz25/PFD_Agent/commit/a60a2ad8d9869d5a278fe3296644f1114b38f21e))
+
+
 ## v1.2.2 (2026-04-21)
 
 ### Bug Fixes
