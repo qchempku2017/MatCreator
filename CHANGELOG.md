@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.2.4 (2026-05-06)
+
+### Bug Fixes
+
+- Isolate execution context
+  ([`0017d2f`](https://github.com/nlz25/PFD_Agent/commit/0017d2fc8ca295bd78614124fd46802e2b0c8575))
+
+
 ## v1.2.3 (2026-04-23)
 
 ### Bug Fixes
