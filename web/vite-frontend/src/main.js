@@ -13,8 +13,6 @@ const state = {
   sessionId: `session-${Math.floor(Date.now() / 1000)}`,
   userId: localStorage.getItem("mat_userId") || "",
   sessionReady: false,
-  artifacts: [],
-  structures: [],
 };
 
 // ---------------------------------------------------------------------------
@@ -24,8 +22,6 @@ const state = {
 const chatArea = document.getElementById("chat-area");
 const textInput = document.getElementById("text-input");
 const sendBtn = document.getElementById("send-btn");
-const artifactList = document.getElementById("artifact-list");
-const structureList = document.getElementById("structure-list");
 const sessionIdEl = document.getElementById("session-id");
 const sessionListEl = document.getElementById("session-list");
 const resetBtn = document.getElementById("reset-session");
@@ -467,10 +463,7 @@ async function switchSession(sessionId) {
   state.sessionId = sessionId;
   state.sessionReady = true;
   sessionIdEl.textContent = sessionId;
-  state.artifacts = [];
-  state.structures = [];
-  setArtifacts([], artifactList, "No artifacts yet");
-  setArtifacts([], structureList, "No structures yet");
+  renderSessionFilesTree([]);
   agentGraph.reset();
   await loadSession(sessionId);
   await loadSessions();
@@ -478,6 +471,8 @@ async function switchSession(sessionId) {
 }
 
 refreshSessionsBtn.addEventListener("click", (e) => { e.stopPropagation(); loadSessions(); });
+
+document.getElementById("refresh-files").addEventListener("click", (e) => { e.stopPropagation(); refreshSessionFiles(); });
 
 // ---------------------------------------------------------------------------
 // File path → API URL conversion
@@ -589,50 +584,6 @@ function addAgentTimelineMessage(timeline) {
   return inner;
 }
 
-function setArtifacts(list, target, emptyText) {
-  target.innerHTML = "";
-  if (!list.length) {
-    const li = document.createElement("li");
-    li.className = "empty";
-    li.textContent = emptyText;
-    target.appendChild(li);
-    return;
-  }
-  list.forEach((item) => {
-    const li = document.createElement("li");
-    if (item.path) {
-      // Structure file — always open in 3D viewer, never as a raw link
-      li.textContent = item.name || item.path.split("/").pop();
-      li.classList.add("structure-item");
-      li.addEventListener("click", () => openViewer(item));
-    } else if (item.url) {
-      if (item.isImage) {
-        // Show thumbnail + filename link for plot images
-        const wrap = document.createElement("div");
-        wrap.className = "artifact-image-wrap";
-        const img = document.createElement("img");
-        img.src = item.url;
-        img.className = "artifact-thumb";
-        img.alt = item.name;
-        const a = document.createElement("a");
-        a.href = item.url;
-        a.textContent = item.name;
-        a.target = "_blank";
-        wrap.appendChild(img);
-        wrap.appendChild(a);
-        li.appendChild(wrap);
-      } else {
-        const a = document.createElement("a");
-        a.href = item.url;
-        a.textContent = item.name || item.url;
-        a.target = "_blank";
-        li.appendChild(a);
-      }
-    }
-    target.appendChild(li);
-  });
-}
-
 // Classify a file path as "structure", "image", or "artifact" by extension/name.
 const STRUCTURE_EXTS = new Set([".cif", ".xyz", ".extxyz", ".vasp"]);
 const STRUCTURE_NAMES = new Set(["poscar", "contcar"]);
@@ -647,86 +598,116 @@ function classifyPath(p) {
   return "artifact";
 }
 
-// Extract artifacts/structures from a functionResponse.response object,
-// converting filesystem paths to /api/workspace/files URLs.
-function harvestFromResponse(response) {
-  if (!response || typeof response !== "object") return;
-  if (response.plot_path) {
-    state.artifacts.push({
-      name: response.plot_path.split("/").pop(),
-      url: pathToApiUrl(response.plot_path),
-      isImage: true,
-    });
-  }
-  if (response.artifact_path) {
-    state.artifacts.push({
-      name: response.artifact_path.split("/").pop(),
-      url: pathToApiUrl(response.artifact_path),
-    });
-  }
-  if (response.structure_path) {
-    state.structures.push({
-      name: response.structure_path.split("/").pop(),
-      path: response.structure_path,
-      url: pathToApiUrl(response.structure_path),
-    });
-  }
-  // Handle artifacts array from submit_step_result — classify each path by extension
-  const list = response.artifacts || response.artifact_paths || [];
-  for (const item of list) {
-    const p = typeof item === "string" ? item : (item.path || item.url || "");
-    if (!p) continue;
-    const name = p.split("/").pop();
-    const kind = classifyPath(p);
-    if (kind === "structure") {
-      state.structures.push({ name, path: p, url: pathToApiUrl(p) });
-    } else if (kind === "image") {
-      state.artifacts.push({ name, url: pathToApiUrl(p), isImage: true });
-    } else {
-      state.artifacts.push({ name, url: pathToApiUrl(p) });
-    }
-  }
-  setArtifacts(state.artifacts, artifactList, "No artifacts yet");
-  setArtifacts(state.structures, structureList, "No structures yet");
+// ---------------------------------------------------------------------------
+// Session files tree
+// ---------------------------------------------------------------------------
+
+function formatFileSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-// Harvest top-level artifact/structure arrays from an SSE event envelope,
-// and also check functionResponse.response for file paths.
-function harvest(evt) {
-  const artifacts = evt.artifacts || evt.artifact_paths || [];
-  artifacts.forEach((art) => {
-    if (typeof art === "string") {
-      state.artifacts.push({ name: art.split("/").pop(), url: pathToApiUrl(art) });
-    } else if (art && typeof art === "object") {
-      const rawUrl = art.url || art.path;
-      state.artifacts.push({
-        name: art.name || art.path || "artifact",
-        url: rawUrl ? pathToApiUrl(rawUrl) : rawUrl,
-      });
+function renderSessionFilesTree(files) {
+  const ul = document.getElementById("session-files-tree");
+  ul.innerHTML = "";
+  if (!files.length) {
+    const li = document.createElement("li");
+    li.className = "empty";
+    li.textContent = "No files yet";
+    ul.appendChild(li);
+    return;
+  }
+
+  // Find prefix to strip by locating session_id in path
+  let prefix = "";
+  const sidIdx = files[0].path.indexOf(state.sessionId);
+  if (sidIdx >= 0) {
+    prefix = files[0].path.slice(0, sidIdx + state.sessionId.length);
+  } else {
+    let common = files[0].path;
+    for (const f of files) {
+      let i = 0;
+      while (i < common.length && i < f.path.length && common[i] === f.path[i]) i++;
+      common = common.slice(0, i);
     }
+    prefix = common.slice(0, common.lastIndexOf("/") + 1);
+  }
+
+  // Group files by subdirectory
+  const byDir = new Map();
+  for (const file of files) {
+    const rel = file.path.slice(prefix.length).replace(/^\//, "");
+    const lastSlash = rel.lastIndexOf("/");
+    const dir = lastSlash >= 0 ? rel.slice(0, lastSlash) : "";
+    const name = lastSlash >= 0 ? rel.slice(lastSlash + 1) : rel;
+    if (!byDir.has(dir)) byDir.set(dir, []);
+    byDir.get(dir).push({ ...file, relname: name, relpath: rel });
+  }
+
+  const sortedDirs = [...byDir.keys()].sort((a, b) => {
+    if (a === "") return -1;
+    if (b === "") return 1;
+    return a.localeCompare(b);
   });
-  const structures = evt.structures || evt.structure_paths || evt.trajectory_files || [];
-  structures.forEach((s) => {
-    if (typeof s === "string") {
-      state.structures.push({ name: s.split("/").pop(), path: s, url: pathToApiUrl(s) });
-    } else if (s && typeof s === "object") {
-      const rawPath = s.path || s.url || "";
-      state.structures.push({
-        name: s.name || s.path || "structure",
-        path: rawPath,
-        url: rawPath ? pathToApiUrl(rawPath) : "",
-      });
+
+  for (const dir of sortedDirs) {
+    if (dir !== "") {
+      const dirLi = document.createElement("li");
+      dirLi.className = "tree-dir";
+      dirLi.textContent = dir + "/";
+      ul.appendChild(dirLi);
     }
-  });
-  // Extract from every functionResponse.response inside content.parts
-  const parts = evt?.content?.parts || [];
-  for (const p of parts) {
-    if (p.functionResponse?.response) {
-      harvestFromResponse(p.functionResponse.response);
+    for (const f of byDir.get(dir)) {
+      const li = document.createElement("li");
+      li.className = dir ? "tree-file tree-file-indent" : "tree-file";
+
+      const nameSpan = document.createElement("span");
+      nameSpan.className = "tree-filename";
+      nameSpan.textContent = f.relname;
+      li.appendChild(nameSpan);
+
+      const sizeSpan = document.createElement("span");
+      sizeSpan.className = "tree-filesize";
+      sizeSpan.textContent = formatFileSize(f.size);
+      li.appendChild(sizeSpan);
+
+      const actions = document.createElement("div");
+      actions.className = "tree-actions";
+
+      const dlLink = document.createElement("a");
+      dlLink.href = `/api/workspace/files?path=${encodeURIComponent(f.path)}`;
+      dlLink.download = f.relname;
+      dlLink.className = "tree-btn";
+      dlLink.title = "Download";
+      dlLink.textContent = "↓";
+      actions.appendChild(dlLink);
+
+      if (classifyPath(f.path) === "structure") {
+        const viewBtn = document.createElement("button");
+        viewBtn.className = "tree-btn";
+        viewBtn.title = "View 3D";
+        viewBtn.textContent = "⬡";
+        viewBtn.addEventListener("click", () =>
+          openViewer({ path: f.path, name: f.relname, url: `/api/workspace/files?path=${encodeURIComponent(f.path)}` })
+        );
+        actions.appendChild(viewBtn);
+      }
+
+      li.appendChild(actions);
+      ul.appendChild(li);
     }
   }
-  setArtifacts(state.artifacts, artifactList, "No artifacts yet");
-  setArtifacts(state.structures, structureList, "No structures yet");
+}
+
+async function refreshSessionFiles() {
+  if (!state.sessionId || !state.sessionReady) return;
+  try {
+    const resp = await fetch(`/api/sessions/${state.sessionId}/files`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    renderSessionFilesTree(data.files || []);
+  } catch (_) {}
 }
 
 // ---------------------------------------------------------------------------
@@ -766,8 +747,6 @@ async function loadSession(sessionId) {
 
     // Rebuild chat from server-canonical state
     chatArea.innerHTML = "";
-    state.artifacts = [];
-    state.structures = [];
 
     // First pass: collect all functionResponses keyed by ID for cross-event matching
     const frById = {};
@@ -811,7 +790,6 @@ async function loadSession(sessionId) {
               name: matchedFr.name || "Unknown",
               response: matchedFr.response || {},
             });
-            harvestFromResponse(matchedFr.response);
           }
         } else if (p.functionResponse) {
           const fr = p.functionResponse;
@@ -825,7 +803,6 @@ async function loadSession(sessionId) {
               name: fr.name || "Unknown",
               response: fr.response || {},
             });
-            harvestFromResponse(fr.response);
           }
         } else if (p.text && !p.thought) {
           accText += p.text;
@@ -843,8 +820,7 @@ async function loadSession(sessionId) {
       }
     }
 
-    setArtifacts(state.artifacts, artifactList, "No artifacts yet");
-    setArtifacts(state.structures, structureList, "No structures yet");
+    await refreshSessionFiles();
   } catch (err) {
     console.error("Failed to load session:", err);
   }
@@ -907,7 +883,6 @@ async function sendMessage(message) {
         if (dataStr === "[DONE]") continue;
         try {
           const evt = JSON.parse(dataStr);
-          harvest(evt);
           const parts = evt?.content?.parts || [];
           for (const p of parts) {
             if (p.thought) {
@@ -955,6 +930,7 @@ async function sendMessage(message) {
     await agentGraph._poll(state.sessionId);
     agentGraph.stopPolling();
     await loadSession(state.sessionId);
+    await refreshSessionFiles();
   }
 }
 
@@ -1032,10 +1008,7 @@ resetBtn.addEventListener("click", () => {
   state.sessionReady = false;
   sessionIdEl.textContent = state.sessionId;
   chatArea.innerHTML = "";
-  state.artifacts = [];
-  state.structures = [];
-  setArtifacts([], artifactList, "No artifacts yet");
-  setArtifacts([], structureList, "No structures yet");
+  renderSessionFilesTree([]);
   agentGraph.reset();
   loadSessions();
 });

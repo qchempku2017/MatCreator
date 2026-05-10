@@ -345,6 +345,62 @@ details.panel-block:not([open]) > summary.block-header::after { transform: rotat
   border-radius: 6px;
 }
 
+/* ── Session files tree ──────────────────────────────── */
+.tree-dir {
+  padding: 6px 8px 2px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin-top: 4px;
+  list-style: none;
+}
+.tree-file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  list-style: none;
+}
+.tree-file:hover { background: rgba(255,255,255,0.05); }
+.tree-file-indent { padding-left: 18px; }
+.tree-filename {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+.tree-filesize {
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.tree-actions {
+  display: flex;
+  gap: 3px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.tree-file:hover .tree-actions { opacity: 1; }
+.tree-btn {
+  background: rgba(255,255,255,0.08);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  padding: 2px 5px;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+}
+.tree-btn:hover { background: rgba(255,255,255,0.15); }
+
 /* ── JSON blocks in timeline ─────────────────────────────── */
 .json-block {
   font-size: 11px;
