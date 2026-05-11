@@ -197,10 +197,11 @@ def run_python(code: str, tool_context: ToolContext) -> str:
     Returns:
         Combined stdout and stderr output, truncated to 4 000 characters.
     """
-    cwd = None
-    session_id = tool_context.state.get("session_id")
-    if session_id:
-        cwd = str(get_session_workdir(session_id))
+    cwd = tool_context.state.get("workspace_dir")
+    if not cwd:
+        session_id = tool_context.state.get("session_id")
+        if session_id:
+            cwd = str(get_session_workdir(session_id))
     result = subprocess.run(
         ["python", "-c", code],
         capture_output=True,
@@ -226,10 +227,11 @@ def run_bash(script: str, tool_context: ToolContext) -> str:
     Returns:
         Combined stdout and stderr output, truncated to 4 000 characters.
     """
-    cwd = None
-    session_id = tool_context.state.get("session_id")
-    if session_id:
-        cwd = str(get_session_workdir(session_id))
+    cwd = tool_context.state.get("workspace_dir")
+    if not cwd:
+        session_id = tool_context.state.get("session_id")
+        if session_id:
+            cwd = str(get_session_workdir(session_id))
     try:
         result = subprocess.run(
             ["bash", "-c", script],
@@ -310,14 +312,18 @@ def run_skill_script(
             f"Ensure the skill has a scripts/{script_name} file."
         )
 
-    cwd = None
+    cwd = tool_context.state.get("workspace_dir")
     env = None
-    session_id = tool_context.state.get("session_id")
-    if session_id:
-        session_workdir = get_session_workdir(session_id)
-        cwd = str(session_workdir)
+    if not cwd:
+        session_id = tool_context.state.get("session_id")
+        if session_id:
+            session_workdir = get_session_workdir(session_id)
+            cwd = str(session_workdir)
+            env = dict(os.environ)
+            env["MATCLAW_SESSION_DIR"] = str(session_workdir)
+    if cwd and env is None:
         env = dict(os.environ)
-        env["MATCLAW_SESSION_DIR"] = str(session_workdir)
+        env["MATCLAW_SESSION_DIR"] = cwd
 
     cmd = f"python {script_path} {args}"
     try:

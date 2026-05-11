@@ -173,7 +173,7 @@ mattergen-finetune adapter.model_path=MODEL_NAME data_module=mp_20 data_module.r
 ```
 
 - `adapter.model_path=MODEL_NAME`: `MODEL_NAME` can be a relativate path, such as 'mattergen_base'.
-- `data_module.root_dir=data_path`: Because the Bohrium remote root is `/${ROMOTE_ROOT}`, so `data_path` should be an absolute path start with `/${ROMOTE_ROOT}`. It should usually be an absolute path such as `/${ROMOTE_ROOT}/my_dataset`.
+- `data_module.root_dir=data_path`: Because the Bohrium remote root is `${REMOTE_ROOT}`, so `data_path` should be an absolute path start with `${REMOTE_ROOT}`. It should usually be an absolute path such as `${REMOTE_ROOT}/my_dataset`.
 - `PROPERTY1` and `PROPERTY2` must be replaced with the actual property names used by the dataset and configuration. If only one property is used, include only one property in the command.
 
 
@@ -181,7 +181,7 @@ mattergen-finetune adapter.model_path=MODEL_NAME data_module=mp_20 data_module.r
 An example for single-property finetune command:
 
 ```bash
-mattergen-finetune adapter.model_path=/${ROMOTE_ROOT}/home/zdj/softutils/mattergen/checkpoints/mattergen_base data_module=mp_20 data_module.root_dir=/${ROMOTE_ROOT}/my_dataset +lightning_module/diffusion_module/model/property_embeddings@adapter.adapter.property_embeddings_adapt.$PROPERTY1=$PROPERTY1 ~trainer.logger data_module.properties=["$PROPERTY1"] hydra.run.dir=results
+mattergen-finetune adapter.model_path=${REMOTE_ROOT}/home/zdj/softutils/mattergen/checkpoints/mattergen_base data_module=mp_20 data_module.root_dir=${REMOTE_ROOT}/my_dataset +lightning_module/diffusion_module/model/property_embeddings@adapter.adapter.property_embeddings_adapt.$PROPERTY1=$PROPERTY1 ~trainer.logger data_module.properties=["$PROPERTY1"] hydra.run.dir=results
 ```
 
 

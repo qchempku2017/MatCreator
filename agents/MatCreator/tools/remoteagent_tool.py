@@ -51,8 +51,7 @@ def _build_remote_agent(agent_cfg: dict[str, Any]) -> RemoteA2aAgent:
     return RemoteA2aAgent(
         name=name,
         description=description,
-        agent_card=agent_card,
-        use_legacy=bool(agent_cfg.get("use_legacy", False)),
+        agent_card=agent_card
     )
 
 

@@ -40,7 +40,7 @@ MANIFEST
 
 # adk package
 *.adk/
-*.json
+
 
 # Installer logs
 pip-log.txt
@@ -231,3 +231,7 @@ __marimo__/
 *.UPF
 
 POT_GGA_PAW_PBE/
+
+# Front end
+web/vite-frontend/dist/
+web/vite-frontend/node_modules/

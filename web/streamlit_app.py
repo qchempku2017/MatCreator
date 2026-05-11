@@ -75,6 +75,37 @@ def is_structure_file(path: str | Path) -> bool:
         "CONTCAR",
     }
 
+
+def _session_workdir(session_id: str | None = None) -> Path | None:
+    """Return the active session work directory."""
+    sid = session_id or st.session_state.get("session_id")
+    if not sid:
+        return None
+    _env_session_dir = os.environ.get("MATCLAW_SESSION_DIR", "")
+    if _env_session_dir:
+        return Path(_env_session_dir).expanduser().resolve()
+    return WORKSPACE_ROOT / "sessions" / sid
+
+
+def _extract_response_paths(payload) -> dict[str, str]:
+    """Recursively extract known artifact paths from a tool response payload."""
+    found = {}
+    path_keys = {"structure_path", "plot_path", "artifact_path"}
+
+    def walk(value):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key in path_keys and item:
+                    found[key] = str(item)
+                else:
+                    walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    walk(payload)
+    return found
+
 # Set page config
 st.set_page_config(
     page_title="MatCreator",
@@ -301,6 +332,207 @@ def render_stream_timeline(container, timeline):
 
             elif event_type == "text":
                 st.markdown(event.get("text", ""))
+
+
+def merge_replayed_text(current_text: str, incoming_text: str) -> str:
+    """Merge text chunks that may be deltas or replayed full snapshots."""
+    if not incoming_text:
+        return current_text
+    if not current_text:
+        return incoming_text
+    if incoming_text.startswith(current_text):
+        return incoming_text
+    if current_text.endswith(incoming_text):
+        return current_text
+
+    max_overlap = min(len(current_text), len(incoming_text))
+    for overlap in range(max_overlap, 0, -1):
+        if current_text.endswith(incoming_text[:overlap]):
+            return current_text + incoming_text[overlap:]
+
+    return current_text + incoming_text
+
+
+def compact_repeated_prefix_snapshots(text: str) -> str:
+    """Reduce strings shaped like A + A+B + A+B+C to the latest snapshot."""
+    if not text:
+        return text
+
+    compacted = text
+    changed = True
+    while changed:
+        changed = False
+        max_prefix = len(compacted) // 2
+        for size in range(max_prefix, 3, -1):
+            prefix = compacted[:size]
+            rest = compacted[size:]
+            if rest.startswith(prefix):
+                compacted = rest
+                changed = True
+                break
+    return compacted
+
+
+def merge_unique_dict_items(existing: list[dict], incoming: list[dict]) -> list[dict]:
+    """Append dict items while preserving order and removing exact duplicates."""
+    merged = list(existing)
+    seen = {json.dumps(item, sort_keys=True, ensure_ascii=True) for item in existing}
+    for item in incoming:
+        marker = json.dumps(item, sort_keys=True, ensure_ascii=True)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        merged.append(item)
+    return merged
+
+
+def merge_agent_snapshot(prev: dict, curr: dict) -> dict | None:
+    """Merge consecutive assistant events when later events replay earlier text."""
+    prev_content = prev.get("content", "")
+    curr_content = curr.get("content", "")
+    prev_thought = prev.get("thought", "")
+    curr_thought = curr.get("thought", "")
+
+    content_replay = bool(
+        prev_content
+        and curr_content
+        and (
+            curr_content.startswith(prev_content)
+            or prev_content.endswith(curr_content)
+        )
+    )
+    thought_replay = bool(
+        prev_thought
+        and curr_thought
+        and (
+            curr_thought.startswith(prev_thought)
+            or prev_thought.endswith(curr_thought)
+        )
+    )
+    metadata_only = not curr_content and not curr_thought
+
+    if not (content_replay or thought_replay or metadata_only):
+        return None
+
+    merged = dict(prev)
+    if curr_content:
+        merged["content"] = compact_repeated_prefix_snapshots(
+            merge_replayed_text(prev_content, curr_content)
+        )
+    if curr_thought:
+        merged["thought"] = compact_repeated_prefix_snapshots(
+            merge_replayed_text(prev_thought, curr_thought)
+        )
+
+    for key in ("structure_path", "plot_path", "artifact_path"):
+        if curr.get(key):
+            merged[key] = curr[key]
+
+    merged["function_calls"] = merge_unique_dict_items(
+        prev.get("function_calls", []),
+        curr.get("function_calls", []),
+    )
+    merged["function_responses"] = merge_unique_dict_items(
+        prev.get("function_responses", []),
+        curr.get("function_responses", []),
+    )
+    return merged
+
+
+def collapse_replayed_messages(messages: list[dict]) -> list[dict]:
+    """Collapse ADK replay/snapshot events into stable chat messages."""
+    collapsed = []
+    for msg in messages:
+        if not collapsed:
+            collapsed.append(msg)
+            continue
+
+        prev = collapsed[-1]
+        if prev.get("role") == "agent" and msg.get("role") == "agent":
+            merged = merge_agent_snapshot(prev, msg)
+            if merged is not None:
+                collapsed[-1] = merged
+                continue
+
+        if msg.get("role") == "agent" and msg.get("content"):
+            msg = dict(msg)
+            msg["content"] = compact_repeated_prefix_snapshots(msg["content"])
+        if msg.get("role") == "agent" and msg.get("thought"):
+            msg = dict(msg)
+            msg["thought"] = compact_repeated_prefix_snapshots(msg["thought"])
+
+        collapsed.append(msg)
+    return collapsed
+
+
+def dedupe_agent_thoughts(messages: list[dict]) -> list[dict]:
+    """Remove repeated thought snapshots while preserving tool/text messages."""
+    deduped = []
+    seen_thoughts: list[tuple[str, int]] = []
+    for msg in messages:
+        if msg.get("role") != "agent" or not msg.get("thought"):
+            deduped.append(msg)
+            continue
+
+        thought = compact_repeated_prefix_snapshots(msg["thought"]).strip()
+        normalized = " ".join(thought.split())
+        duplicate = any(normalized == seen for seen, _idx in seen_thoughts)
+        if duplicate:
+            msg = dict(msg)
+            msg.pop("thought", None)
+        else:
+            for seen, idx in list(seen_thoughts):
+                if seen and seen in normalized:
+                    deduped[idx] = dict(deduped[idx])
+                    deduped[idx].pop("thought", None)
+            seen_thoughts = [
+                (seen, idx)
+                for seen, idx in seen_thoughts
+                if not (seen and seen in normalized)
+            ]
+            if any(normalized in seen for seen, _idx in seen_thoughts):
+                msg = dict(msg)
+                msg.pop("thought", None)
+            else:
+                seen_thoughts.append((normalized, len(deduped)))
+                msg = dict(msg)
+                msg["thought"] = thought
+        deduped.append(msg)
+    return deduped
+
+
+def upsert_timeline_text(timeline: list[dict], text: str) -> None:
+    """Keep only one live assistant text block while streaming cumulative snapshots."""
+    timeline[:] = [event for event in timeline if event.get("type") != "text"]
+    if text:
+        timeline.append({"type": "text", "text": text})
+
+
+def upsert_timeline_thought(timeline: list[dict], text: str) -> None:
+    """Merge adjacent thought snapshots instead of rendering repeated expanders."""
+    if not text:
+        return
+    compacted = compact_repeated_prefix_snapshots(text)
+    if timeline and timeline[-1].get("type") == "thought":
+        timeline[-1]["text"] = compact_repeated_prefix_snapshots(
+            merge_replayed_text(timeline[-1].get("text", ""), compacted)
+        )
+        return
+    timeline.append({"type": "thought", "text": compacted})
+
+
+def upsert_timeline_event(timeline: list[dict], event: dict) -> None:
+    """Append tool events once, updating repeats that share the same id/type."""
+    event_id = event.get("id")
+    event_type = event.get("type")
+    if event_id:
+        for idx, existing in enumerate(timeline):
+            if existing.get("type") == event_type and existing.get("id") == event_id:
+                timeline[idx] = event
+                return
+    if timeline and timeline[-1] == event:
+        return
+    timeline.append(event)
 
 
 def visualize_structure(structure_path, height=400, width=600):
@@ -633,12 +865,15 @@ def load_session(session_id):
                 # Process all parts, separating thought parts from response parts
                 for part in parts:
                     if part.get("thought"):
-                        thought_text += part.get("text", "")
+                        thought_text = merge_replayed_text(
+                            thought_text,
+                            part.get("text", ""),
+                        )
                         continue
 
                     # Extract text content
                     if "text" in part:
-                        text += part.get("text", "")
+                        text = merge_replayed_text(text, part.get("text", ""))
 
                     # Extract function calls
                     if "functionCall" in part:
@@ -669,13 +904,13 @@ def load_session(session_id):
                             artifacts.append({"name": os.path.basename(a_path), "url": a_path})
                             
                 if thought_text:
-                    msg_entry["thought"] = thought_text
+                    msg_entry["thought"] = compact_repeated_prefix_snapshots(thought_text)
                 if function_calls:
                     msg_entry["function_calls"] = function_calls
                 if function_responses:
                     msg_entry["function_responses"] = function_responses
                 if text:
-                    msg_entry["content"] = text
+                    msg_entry["content"] = compact_repeated_prefix_snapshots(text)
                 # Add extracted paths to message entry
                 if structure_path:
                     msg_entry["structure_path"] = structure_path
@@ -715,6 +950,8 @@ def load_session(session_id):
                 )
 
             messages = [m for m in messages if not _is_merged_response_only(m)]
+            messages = collapse_replayed_messages(messages)
+            messages = dedupe_agent_thoughts(messages)
 
             st.session_state.messages = messages
             st.session_state.artifacts = artifacts
@@ -763,20 +1000,18 @@ def create_session():
         return False
 
 def send_message_sse(message, attachments=None):
-    """Stream agent response token-by-token via /run_sse, then refresh via load_session."""
+    """Stream agent response in-place so thought/tool/text parts render immediately."""
     if not st.session_state.session_id:
         st.error("No active session. Please create a session first.")
         return False
 
     attachments_payload = attachments if attachments else []
 
-    # Show user message immediately (temporary display until rerun)
     with st.chat_message("user"):
         st.write(message)
         for att_path in attachments_payload:
             st.caption(f"📎 {os.path.basename(att_path)}")
 
-    # Build message text with attachment paths included
     message_with_attachments = message
     if attachments_payload:
         attachment_paths = "\n".join(attachments_payload)
@@ -801,19 +1036,18 @@ def send_message_sse(message, attachments=None):
                 }
             }),
             stream=True,
+            timeout=(10, None),
         ) as response:
             if response.status_code != 200:
                 st.error(f"Error: {response.text}")
                 return False
 
+            timeline = []
             accumulated_content = ""
-
             with st.chat_message("agent"):
-                # Render every incoming part against one timeline to preserve temporal order.
-                timeline = []
                 timeline_holder = st.empty()
 
-                for line in response.iter_lines(decode_unicode=True):
+                for line in response.iter_lines(chunk_size=1, decode_unicode=True):
                     if not line or not line.startswith("data: "):
                         continue
                     data_str = line[len("data: "):]
@@ -821,50 +1055,119 @@ def send_message_sse(message, attachments=None):
                         break
                     try:
                         event = json.loads(data_str)
-                        for p in event.get("content", {}).get("parts", []):
-                            if p.get("thought", False):
-                                timeline.append({"type": "thought", "text": p.get("text", "")})
-                                render_stream_timeline(timeline_holder, timeline)
-
-                            elif "functionCall" in p:
-                                fc = p["functionCall"]
-                                timeline.append({
-                                    "type": "function_call",
-                                    "id": fc.get("id"),
-                                    "name": fc.get("name", "Unknown"),
-                                    "args": fc.get("args", {}),
-                                })
-                                render_stream_timeline(timeline_holder, timeline)
-
-                            elif "functionResponse" in p:
-                                fr = p["functionResponse"]
-                                resp = fr.get("response", {})
-                                timeline.append({
-                                    "type": "function_response",
-                                    "id": fr.get("id"),
-                                    "name": fr.get("name", "Unknown"),
-                                    "response": resp,
-                                })
-                                render_stream_timeline(timeline_holder, timeline)
-
-                            elif "text" in p:
-                                accumulated_content += p["text"]
-                                if timeline and timeline[-1].get("type") == "text":
-                                    timeline[-1]["text"] = accumulated_content
-                                else:
-                                    timeline.append({"type": "text", "text": accumulated_content})
-                                render_stream_timeline(timeline_holder, timeline)
                     except json.JSONDecodeError:
                         continue
+
+                    for part in event.get("content", {}).get("parts", []):
+                        if part.get("thought"):
+                            upsert_timeline_thought(timeline, part.get("text", ""))
+                            render_stream_timeline(timeline_holder, timeline)
+
+                        elif "functionCall" in part:
+                            fc = part["functionCall"]
+                            upsert_timeline_event(timeline, {
+                                "type": "function_call",
+                                "id": fc.get("id"),
+                                "name": fc.get("name", "Unknown"),
+                                "args": fc.get("args", {}),
+                            })
+                            render_stream_timeline(timeline_holder, timeline)
+
+                        elif "functionResponse" in part:
+                            fr = part["functionResponse"]
+                            resp = fr.get("response", {})
+                            for path in _extract_response_paths(resp).values():
+                                resolved = resolve_path(path)
+                                if os.path.exists(resolved) and is_structure_file(resolved):
+                                    st.session_state.selected_structure_path = resolved
+                            upsert_timeline_event(timeline, {
+                                "type": "function_response",
+                                "id": fr.get("id"),
+                                "name": fr.get("name", "Unknown"),
+                                "response": resp,
+                            })
+                            render_stream_timeline(timeline_holder, timeline)
+
+                        elif "text" in part:
+                            accumulated_content = merge_replayed_text(
+                                accumulated_content,
+                                part["text"],
+                            )
+                            upsert_timeline_text(
+                                timeline,
+                                compact_repeated_prefix_snapshots(accumulated_content),
+                            )
+                            render_stream_timeline(timeline_holder, timeline)
 
     except requests.RequestException as exc:
         st.error(f"Streaming error: {exc}")
         return False
 
-    # Refresh all session state from the server for consistent rendering on rerun
     load_session(st.session_state.session_id)
     st.session_state.uploader_key += 1
     return True
+
+
+def render_message(msg, msg_idx) -> None:
+    if not msg or (len(msg) == 1 and "role" in msg):
+        return
+
+    if msg["role"] == "user":
+        with st.chat_message("user"):
+            if "content" in msg:
+                st.markdown(compact_repeated_prefix_snapshots(msg["content"]))
+            if "attachments" in msg and msg["attachments"]:
+                for att_path in msg["attachments"]:
+                    st.caption(f"📎 {os.path.basename(att_path)}")
+        return
+
+    with st.chat_message("agent"):
+        if msg.get("thought"):
+            with st.expander("🤔 Thinking...", expanded=False):
+                st.markdown(msg["thought"])
+        for fc in msg.get("function_calls", []):
+            with st.expander(fc["name"], expanded=False, icon="🔧"):
+                st.json(fc["args"])
+            if "response" in fc:
+                with st.expander(fc["name"], expanded=False, icon="📥"):
+                    st.json(fc["response"])
+        for fr in msg.get("function_responses", []):
+            with st.expander(fr["name"], expanded=False, icon="📥"):
+                st.json(fr["response"])
+        if msg.get("content"):
+            st.markdown(compact_repeated_prefix_snapshots(msg["content"]))
+
+        if "structure_path" in msg and os.path.exists(resolve_path(msg["structure_path"])):
+            if st.button(f"🔬 View Structure: {os.path.basename(msg['structure_path'])}", key=f"view_struct_{msg_idx}"):
+                st.session_state.selected_structure_path = msg["structure_path"]
+                st.rerun()
+            with open(resolve_path(msg["structure_path"]), "rb") as f:
+                st.download_button(
+                    label=f"⬇️ Download {os.path.basename(msg['structure_path'])}",
+                    data=f.read(),
+                    file_name=os.path.basename(msg["structure_path"]),
+                    key=f"download_struct_{msg_idx}_{os.path.basename(msg['structure_path'])}"
+                )
+        if "plot_path" in msg and os.path.exists(resolve_path(msg["plot_path"])):
+            st.image(resolve_path(msg["plot_path"]), use_container_width=True)
+            with open(resolve_path(msg["plot_path"]), "rb") as f:
+                st.download_button(
+                    label=f"⬇️ Download {os.path.basename(msg['plot_path'])}",
+                    data=f.read(),
+                    file_name=os.path.basename(msg["plot_path"]),
+                    key=f"download_plot_{msg_idx}_{os.path.basename(msg['plot_path'])}"
+                )
+        if "artifact_path" in msg and os.path.exists(resolve_path(msg["artifact_path"])):
+            st.divider()
+            st.markdown("**Model File:**")
+            st.info(f"📦 {os.path.basename(msg['artifact_path'])}")
+            with open(resolve_path(msg["artifact_path"]), "rb") as f:
+                st.download_button(
+                    label=f"⬇️ Download {os.path.basename(msg['artifact_path'])}",
+                    data=f.read(),
+                    file_name=os.path.basename(msg["artifact_path"]),
+                    key=f"download_model_{msg_idx}_{os.path.basename(msg['artifact_path'])}"
+                )
 
 # UI Components
 st.title("MatCreator")
@@ -1009,74 +1312,7 @@ if st.session_state.view_mode == "session":
 
         # Display messages
         for msg_idx, msg in enumerate(st.session_state.messages):
-            # Skip messages that only have "role" key
-            if len(msg) == 1 and "role" in msg:
-                continue
-            
-            if msg["role"] == "user":
-                with st.chat_message("user"):
-                    if "content" in msg:
-                        st.markdown(msg["content"])
-                    # Show attachments if present
-                    if "attachments" in msg and msg["attachments"]:
-                        for att_path in msg["attachments"]:
-                            st.caption(f"📎 {os.path.basename(att_path)}")
-            else:
-                with st.chat_message("agent"):
-                    if "thought" in msg:
-                        with st.expander("🤔 Thinking...", expanded=False):
-                            st.markdown(msg["thought"])
-                    if "function_calls" in msg:
-                        for fc in msg["function_calls"]:
-                            with st.expander(fc["name"], expanded=False, icon="🔧"):
-                                st.json(fc["args"])
-                            if "response" in fc:
-                                with st.expander(fc["name"], expanded=False, icon="📥"):
-                                    st.json(fc["response"])
-                    if "function_responses" in msg:
-                        # Unmatched responses (no paired call in this message)
-                        for fr in msg["function_responses"]:
-                            with st.expander(fr["name"], expanded=False, icon="📥"):
-                                st.json(fr["response"])
-                    if "content" in msg:
-                        st.markdown(msg["content"])
-
-                    # Show structure button — opens in right panel
-                    if "structure_path" in msg and os.path.exists(resolve_path(msg["structure_path"])):
-                        if st.button(f"🔬 View Structure: {os.path.basename(msg['structure_path'])}", key=f"view_struct_{msg_idx}"):
-                            st.session_state.selected_structure_path = msg["structure_path"]
-                            st.rerun()
-                        with open(resolve_path(msg["structure_path"]), "rb") as f:
-                            st.download_button(
-                                label=f"⬇️ Download {os.path.basename(msg['structure_path'])}",
-                                data=f.read(),
-                                file_name=os.path.basename(msg["structure_path"]),
-                                key=f"download_struct_{msg_idx}_{os.path.basename(msg['structure_path'])}"
-                            )
-                    # Show plot inline
-                    if "plot_path" in msg and os.path.exists(resolve_path(msg["plot_path"])):
-                        st.image(resolve_path(msg["plot_path"]), use_container_width=True)
-                        # Download button for plot
-                        with open(resolve_path(msg["plot_path"]), "rb") as f:
-                            st.download_button(
-                                label=f"⬇️ Download {os.path.basename(msg['plot_path'])}",
-                                data=f.read(),
-                                file_name=os.path.basename(msg["plot_path"]),
-                                key=f"download_plot_{msg_idx}_{os.path.basename(msg['plot_path'])}"
-                            )
-                    # Show model if present
-                    if "artifact_path" in msg and os.path.exists(resolve_path(msg["artifact_path"])):
-                        st.divider()
-                        st.markdown("**Model File:**")
-                        st.info(f"📦 {os.path.basename(msg['artifact_path'])}")
-                        # Add download button for model
-                        with open(resolve_path(msg["artifact_path"]), "rb") as f:
-                            st.download_button(
-                                label=f"⬇️ Download {os.path.basename(msg['artifact_path'])}",
-                                data=f.read(),
-                                file_name=os.path.basename(msg["artifact_path"]),
-                                key=f"download_model_{msg_idx}_{os.path.basename(msg['artifact_path'])}"
-                            )
+            render_message(msg, msg_idx)
 
         # Input for new messages
         if st.session_state.session_id:  # Only show input if session exists
@@ -1124,15 +1360,10 @@ if st.session_state.view_mode == "session":
 
         st.subheader("Session Files")
         if st.session_state.session_id:
-            _env_session_dir = os.environ.get("MATCLAW_SESSION_DIR", "")
-            session_workdir = (
-                Path(_env_session_dir).expanduser().resolve()
-                if _env_session_dir
-                else WORKSPACE_ROOT / "sessions" / st.session_state.session_id
-            )
+            session_workdir = _session_workdir()
             if st.button("🔄 Refresh", key="refresh_session_files"):
                 st.rerun()
-            if session_workdir.exists():
+            if session_workdir and session_workdir.exists():
                 all_files = sorted(session_workdir.rglob("*"))
                 files_only = [f for f in all_files if f.is_file()]
                 if files_only:

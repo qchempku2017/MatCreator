@@ -76,13 +76,21 @@ LLM_BASE_URL="BASE_URL"
 If you prefer different LLM models for sub-agents, you can override the default setting at the `.env` file within sub-agents directories. 
 
 #### Web UI (Recommended)
-A simple web UI that supports artifact upload/download, structure visualization and scientific plotting. The web UI server can be started with the following command:
+A modern web UI with graph visualization, artifact upload/download, structure visualization, and scientific plotting. Start all three services (ADK API server, FastAPI middle layer, and Vite frontend) with a single script:
+
 ```bash
-#We strongly recommend running the following script in the background and saving the runtime logs.
- 
-nohup matcreator api-server >> server.log &
-nohup streamlit run web/streamlit_app.py >> web.log &
+bash script/start_matcreator.sh
 ```
+
+This starts:
+- **ADK API server** on `http://localhost:8000`
+- **FastAPI middle layer** on `http://localhost:8001`
+- **Vite frontend** on `http://localhost:5173`
+
+Logs are written to `logs/{api-server,web-main,vite}.log`. Press `Ctrl+C` to stop all services.
+
+> No frontend build step is needed — the Vite dev server runs directly with hot-reload.
+
 ![The web UI for MatCreator](docs/images/agent_plot.png)
 
 #### Non-interactive CLI mode

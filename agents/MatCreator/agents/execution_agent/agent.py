@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 
@@ -10,16 +11,10 @@ from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
 
 from ...constants import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
-from ..thinking_agent.agent import load_skill_context, clear_current_skill
+from ...skill import ALL_SKILLS
+from ...workspace import get_session_workdir
 from ..thinking_agent.summarize import validate_summarize
-from ...tools.workspace_tools import (
-    read_workspace_file,
-    run_bash,
-    run_python,
-    run_skill_script,
-    write_workspace_file,
-)
-from ...tools.util_tools import show_plot, show_structure, show_artifact
+from .step_executor_runner import run_step_executor
 
 logger = logging.getLogger(__name__)
 
@@ -31,82 +26,125 @@ _model_base_url = os.environ.get("LLM_BASE_URL", LLM_BASE_URL)
 # Instruction
 # ---------------------------------------------------------------------------
 
-_EXECUTION_AGENT_INSTRUCTION = """
-You are the MatCreator Executor. Your role is to execute a SINGLE plan step precisely.
+_EXECUTION_ORCHESTRATOR_INSTRUCTION = """
+You are the MatCreator Execution Orchestrator. You manage the full execution of all pending plan steps.
 
 ## Context
 - Goal: {goal}
-- Plan: {plan}
-- Current step: {current_step}
-- Active skill: {active_skill}
-- Skill instruction: {skill_instruction}
+- Full plan: {plan}
+- Resume from step number: {current_step_index} (execute steps with step_number > this value)
+- Workspace directory: {workspace_dir}
+- Prior trajectory: {summarize}
 
-## Execution protocol
-1. Read `current_step` carefully — note its `skill` and `action` fields.
-2. Call `load_skill_context(skill_name)` using the skill from the current step.
-3. Follow the injected `skill_instruction` to execute the step action using the available tools.
-4. When the step is complete, call `validate_summarize` with key_results, artifacts, and concise_summary.
-5. Call `clear_current_skill` to release the skill context.
+## Available skill instructions
+{skill_map}
+
+## Protocol
+1. Identify all plan steps where step_number > {current_step_index}.
+2. For each pending step, call `run_step_executor` with:
+   - `step_number`: the step's number from the plan
+   - `action`: the step's action text
+   - `skill_instruction`: the instruction for the step's skill (from the skill map above)
+   - `workspace_dir`: the workspace directory above
+   - `prior_context`: a brief summary of completed steps (from trajectory, if any)
+3. **Parallelize independent steps**: if consecutive pending steps use different skills
+   and do not share data, issue all their `run_step_executor` calls in a SINGLE response
+   so ADK executes them concurrently.
+4. After each `run_step_executor` result:
+   - `status == "success"`: call `validate_summarize` with key_results, artifacts,
+     concise_summary; then call `set_current_step_index` with the completed step_number.
+   - `status == "needs_replanning"`: call `to_planner` with the replan_reason and STOP.
+     Do not proceed to remaining steps.
+5. Continue until all steps complete or `to_planner` is called.
 
 ## Rules
-- Execute ONLY the current step — do not attempt subsequent steps.
-- If the required skill is not found, report the error and call `to_planner` with the reason.
-- If execution fails unrecoverably, call `to_planner` with a clear reason before stopping.
-- Always include absolute file paths in your summary.
-- NEVER run code without user approval (already given when execution phase started).
+- Use the skill map above for skill instructions. Do NOT call any skill-loading tool.
+- NEVER run code directly — all execution must go through `run_step_executor`.
+- Always use absolute file paths in artifact lists.
 """
 
 # ---------------------------------------------------------------------------
-# Callbacks
+# Tools
 # ---------------------------------------------------------------------------
 
 
 def to_planner(reason: str, tool_context: ToolContext) -> dict:
-    """Signal the orchestrator to abort the current execution loop and return
-    to the planning phase.
+    """Signal the main orchestrator to abort execution and return to planning.
 
-    Call this when the current step cannot proceed and replanning or user input
-    is needed — e.g. a required skill is missing, a prerequisite step failed,
-    the original plan is no longer valid, or a key parameter must be confirmed
-    / provided by the user before execution can continue.
+    Call when a step cannot proceed and replanning or user input is needed.
 
     Args:
-        reason: A short human-readable explanation of why replanning is needed.
-
-    Returns:
-        A confirmation dict so the LLM knows the signal was recorded.
+        reason: Short explanation of why replanning is needed.
     """
     tool_context.state["return_to_planner"] = True
     tool_context.state["return_to_planner_reason"] = reason
-    logger.info("[execution_agent] to_planner called — reason: %s", reason)
+    logger.info("[execution_orchestrator] to_planner — reason: %s", reason)
     return {"status": "ok", "message": f"Returning to planner: {reason}"}
 
 
+def set_current_step_index(step_index: int, tool_context: ToolContext) -> dict:
+    """Update the current step index for resumption tracking.
+
+    Call after each successful step with that step's step_number so execution
+    can resume from the correct point if interrupted later.
+
+    Args:
+        step_index: The 1-based step_number that just completed successfully.
+    """
+    tool_context.state["current_step_index"] = step_index
+    logger.debug("[execution_orchestrator] current_step_index → %d", step_index)
+    return {"status": "ok", "current_step_index": step_index}
+
+
+# ---------------------------------------------------------------------------
+# Callback
+# ---------------------------------------------------------------------------
+
+
 def _exec_before_agent_callback(callback_context: CallbackContext) -> None:
-    """Initialise execution-phase state keys if absent."""
+    """Initialise execution-phase state and inject skill map before the LLM runs."""
+    state = callback_context.state
+
     for key, default in [
         ("goal", None),
         ("plan", None),
-        ("current_step", {}),
-        ("active_skill", None),
-        ("skill_instruction", None),
+        ("current_step_index", 0),
         ("summarize", None),
         ("trajectory_step", 0),
         ("return_to_planner", False),
         ("return_to_planner_reason", None),
     ]:
-        if key not in callback_context.state:
-            callback_context.state[key] = default
+        if key not in state:
+            state[key] = default
+
+    # Workspace directory (session_id is set by PlanningExecutionOrchestrator on first run)
+    session_id = state.get("session_id", "default")
+    state["workspace_dir"] = str(get_session_workdir(session_id))
+
+    # Pre-resolve skill instructions for all skills referenced in the current plan
+    plan = state.get("plan") or {}
+    if isinstance(plan, str):
+        try:
+            plan = json.loads(plan)
+        except json.JSONDecodeError:
+            plan = {}
+    steps = plan.get("steps", []) if isinstance(plan, dict) else []
+    skill_names = {step.get("skill") for step in steps if step.get("skill")}
+
+    sections = [
+        f"### {s.name}\n{s.instructions}"
+        for s in ALL_SKILLS
+        if s.name in skill_names
+    ]
+    state["skill_map"] = "\n\n---\n\n".join(sections) if sections else "(no skills resolved)"
 
 
 # ---------------------------------------------------------------------------
 # Agent instance
 # ---------------------------------------------------------------------------
-from ...tools.remoteagent_tool import load_remote_a2a_agents
-
 
 execution_agent = LlmAgent(
-    name="execution_agent",
+    name="execution_orchestrator",
     model=LiteLlm(
         model=_model_name,
         base_url=_model_base_url,
@@ -114,23 +152,15 @@ execution_agent = LlmAgent(
     ),
     include_contents="none",
     description=(
-        "Executes a single plan step by loading the relevant skill context and running the "
-        "appropriate domain tools. Called by the orchestrator once per step in sequence."
+        "Orchestrates execution of all plan steps by spawning isolated step_executor sub-agents. "
+        "Handles step sequencing, optional parallelism, and error escalation to the planner."
     ),
-    instruction=_EXECUTION_AGENT_INSTRUCTION,
+    instruction=_EXECUTION_ORCHESTRATOR_INSTRUCTION,
     tools=[
-        FunctionTool(load_skill_context),
-        FunctionTool(clear_current_skill),
+        FunctionTool(run_step_executor),
         FunctionTool(to_planner),
         FunctionTool(validate_summarize),
-        FunctionTool(run_python),
-        FunctionTool(run_bash),
-        FunctionTool(run_skill_script),
-        FunctionTool(show_plot),
-        FunctionTool(show_structure),
-        FunctionTool(show_artifact),
-        #*TOOLSETS,
+        FunctionTool(set_current_step_index),
     ],
     before_agent_callback=_exec_before_agent_callback,
-    sub_agents=load_remote_a2a_agents()
 )

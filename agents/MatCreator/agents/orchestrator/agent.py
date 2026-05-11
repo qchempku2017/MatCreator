@@ -9,8 +9,9 @@ Every invocation runs a planning-first loop:
                        If neither flag is set the turn was conversational; the loop
                        exits and control returns to the user.
 
-  2. Execution phase — loops over plan steps, calling execution_agent for each one.
-                       Terminates early if execution_agent calls `to_planner`
+  2. Execution phase — delegates the full plan to execution_agent (an LlmAgent that
+                       spawns isolated step_executor sub-agents and may run steps in
+                       parallel). Terminates early if execution_agent calls `to_planner`
                        (sets state["return_to_planner"] = True).
                        After all steps complete (or on early exit), loops back to
                        the planning phase within the same invocation.
@@ -31,6 +32,7 @@ from google.adk.events import Event
 from pydantic import Field
 
 from ...workspace import init_session_workdir
+from ..graph_logger import AgentGraphLogger
 
 logger = logging.getLogger(__name__)
 
@@ -82,21 +84,33 @@ class PlanningExecutionOrchestrator(BaseAgent):
             state["session_id"] = ctx.session.id
             state["session_workdir_initialized"] = True
 
+        graph = AgentGraphLogger(ctx.session.id)
+        graph.log_node_start("orchestrator", "orchestrator", "Orchestrator")
+
+        loop_idx = graph.count_nodes_of_type("execution")
+
         while True:
             # ── Planning phase (always runs first) ───────────────────────────
             state["execution_approved"] = False
+            has_execution = loop_idx > 0
+            planning_id = f"planning_{loop_idx}" if has_execution else "planning_0"
             logger.info("[orchestrator] entering planning phase")
+            graph.log_node_start(planning_id, "planning", f"Planning {loop_idx + 1}", "orchestrator")
             async for event in self.planning_agent.run_async(ctx):
                 yield event
+            graph.log_node_complete(planning_id, "success")
 
             testing_requested: bool = state.get("testing_requested", False)
             execution_approved: bool = state.get("execution_approved", False)
 
             # ── Testing phase ─────────────────────────────────────────────────
             if testing_requested and self.tester_agent is not None:
+                tester_id = f"tester_{loop_idx}" if has_execution else "tester_0"
                 logger.info("[orchestrator] entering testing phase")
+                graph.log_node_start(tester_id, "tester", f"Testing {loop_idx + 1}", "orchestrator")
                 async for event in self.tester_agent.run_async(ctx):
                     yield event
+                graph.log_node_complete(tester_id, "success")
                 state["testing_requested"] = False
                 continue  # loop back to planner
 
@@ -109,55 +123,40 @@ class PlanningExecutionOrchestrator(BaseAgent):
                     state["execution_approved"] = False
                     continue  # loop back to planner
 
-                current_step_index: int = state.get("current_step_index", 0)
                 total_steps = len(steps)
+                resume_from = state.get("current_step_index", 0)
                 logger.info(
-                    "[orchestrator] executing %d/%d remaining steps",
-                    total_steps - current_step_index,
-                    total_steps,
+                    "[orchestrator] delegating %d steps to execution_orchestrator (resuming from step %d)",
+                    total_steps - resume_from,
+                    resume_from,
                 )
 
-                interrupted = False
-                while current_step_index < total_steps:
-                    step = steps[current_step_index]
-                    state["current_step"] = step
+                exec_id = f"execution_{loop_idx}"
+                graph.log_node_start(exec_id, "execution", f"Execution {loop_idx + 1}", "orchestrator")
+                state["_graph_exec_node_id"] = exec_id
+
+                async for event in self.execution_agent.run_async(ctx):
+                    yield event
+
+                interrupted = state.get("return_to_planner", False)
+                if interrupted:
+                    reason = state.get("return_to_planner_reason", "unspecified")
                     logger.info(
-                        "[orchestrator] step %d/%d — skill=%s | action=%s",
-                        current_step_index + 1,
-                        total_steps,
-                        step.get("skill", "?"),
-                        step.get("action", "?"),
+                        "[orchestrator] execution interrupted — returning to planner (reason: %s)",
+                        reason,
                     )
-                    async for event in self.execution_agent.run_async(ctx):
-                        yield event
-
-                    if state.get("return_to_planner", False):
-                        reason = state.get("return_to_planner_reason", "unspecified")
-                        logger.info(
-                            "[orchestrator] execution interrupted at step %d/%d — returning to planner (reason: %s)",
-                            current_step_index + 1,
-                            total_steps,
-                            reason,
-                        )
-                        state["return_to_planner"] = False
-                        state["return_to_planner_reason"] = None
-                        interrupted = True
-                        break
-
-                    current_step_index += 1
-                    state["current_step_index"] = current_step_index
-
-                if not interrupted:
+                    graph.log_node_complete(exec_id, "failed", summary=f"Interrupted: {reason}")
+                    state["return_to_planner"] = False
+                    state["return_to_planner_reason"] = None
+                    # current_step_index preserved by execution_orchestrator for resumption
+                else:
                     logger.info("[orchestrator] all %d steps complete", total_steps)
+                    graph.log_node_complete(exec_id, "success")
+                    state["current_step_index"] = 0
 
-                # Reset execution flags; only reset step index after full completion.
                 state["execution_approved"] = False
                 state["current_step"] = None
-                if not interrupted:
-                    state["current_step_index"] = 0
-                else:
-                    # Preserve the index so a resume command can continue from here.
-                    state["current_step_index"] = current_step_index
+                loop_idx += 1
                 continue  # loop back to planner
 
             # ── No flag set — planner handled the turn conversationally ───────
@@ -176,4 +175,5 @@ class PlanningExecutionOrchestrator(BaseAgent):
                 logger.warning(
                     "[orchestrator] benchmark mode: no valid plan to auto-approve, exiting"
                 )
+            graph.log_node_complete("orchestrator", "success")
             break

@@ -89,7 +89,7 @@ Report at minimum:
 
 When submitting MatterGen jobs to Bohrium through `dpdisp`, Bohrium-specific submission settings, including authentication, project, image, and machine type, can be read from environment variables such as 'BOHRIUM_MAT_IMAGE' and 'BOHRIUM_MAT_MACHINE'. For the `dpdisp` submission procedure, refer to the `dpdisp` skill documentation.
 
--  When using Bohrium, `forward_files` should include the pretrained model directory. The local pretrained model path can be obtained from the environment variable `mattergen_model`, with one folder per pretrained model name, such as `mattergen_base`.用户也可以指定模型位置。 
+-  When using Bohrium, `forward_files` should include the pretrained model directory. The local pretrained model path can be obtained from the environment variable `mattergen_model`, with one folder per pretrained model name, such as `mattergen_base`. Users can also specify the model path.
 - `backward_files` should include the generated result path so outputs are retrieved, for example the generation output directory.
 
 

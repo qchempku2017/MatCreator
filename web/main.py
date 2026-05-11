@@ -1,0 +1,127 @@
+"""Lightweight FastAPI server that exposes agent graph data to the frontend.
+
+Runs on port 8001 alongside the ADK backend (port 8000).
+
+Endpoints
+---------
+GET /api/agent-graph/{session_id}
+    Returns the JSON graph file for the session, or an empty graph if not found.
+GET /api/workspace/files?path=<path>
+    Serves any file from the workspace root (absolute or relative path).
+    Returns 403 if the path escapes the workspace root.
+GET /api/sessions/{session_id}/files
+    Lists all files under the session's working directory.
+
+The vite dev server proxies /api/* here and /run_sse + /apps/* to the ADK server.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+
+# Allow importing from agents/ and src/ when running as script
+ROOT = Path(__file__).parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from agents.MatCreator.workspace import get_session_workdir, get_workspace_root  # noqa: E402
+
+app = FastAPI(title="MatCreator Graph API", version="1.0.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET"],
+    allow_headers=["*"],
+)
+
+
+@app.get("/api/agent-graph/{session_id}")
+async def get_agent_graph(session_id: str) -> JSONResponse:
+    graph_path = get_workspace_root() / "agent_graphs" / f"{session_id}.json"
+    if not graph_path.exists():
+        return JSONResponse({"session_id": session_id, "nodes": {}, "edges": [], "updated_at": None})
+    try:
+        data = json.loads(graph_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return JSONResponse({"session_id": session_id, "nodes": {}, "edges": [], "updated_at": None})
+    return JSONResponse(data)
+
+
+@app.get("/api/workspace/files")
+async def serve_workspace_file(path: str = Query(..., description="Absolute or workspace-relative file path")) -> FileResponse:
+    ws_root = get_workspace_root().resolve()
+    p = Path(path)
+    resolved = p.resolve() if p.is_absolute() else (ws_root / p).resolve()
+    if not resolved.is_relative_to(ws_root):
+        raise HTTPException(status_code=403, detail="Access denied: path is outside workspace")
+    if not resolved.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(resolved)
+
+
+@app.get("/api/structure/view")
+async def view_structure(path: str = Query(..., description="Absolute or workspace-relative structure file path")) -> JSONResponse:
+    from io import StringIO
+
+    try:
+        from ase.io import read as ase_read
+        from ase.io import write as ase_write
+    except ImportError:
+        raise HTTPException(status_code=500, detail="ASE is not installed")
+
+    ws_root = get_workspace_root().resolve()
+    p = Path(path)
+    resolved = p.resolve() if p.is_absolute() else (ws_root / p).resolve()
+    if not resolved.is_relative_to(ws_root):
+        raise HTTPException(status_code=403, detail="Access denied: path is outside workspace")
+    if not resolved.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    try:
+        atoms = ase_read(str(resolved))
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Cannot parse structure: {exc}")
+
+    buf = StringIO()
+    ase_write(buf, atoms, format="xyz")
+    xyz_data = buf.getvalue()
+
+    return JSONResponse({
+        "xyz": xyz_data,
+        "formula": atoms.get_chemical_formula(),
+        "n_atoms": len(atoms),
+        "periodic": bool(atoms.pbc.any()),
+        "cell": atoms.cell.tolist() if atoms.pbc.any() else None,
+    })
+
+
+@app.get("/api/sessions/{session_id}/files")
+async def list_session_files(session_id: str) -> JSONResponse:
+    session_dir = get_session_workdir(session_id)
+    if not session_dir.exists():
+        return JSONResponse({"files": []})
+    files = [
+        {"name": f.name, "path": str(f), "size": f.stat().st_size}
+        for f in sorted(session_dir.rglob("*"))
+        if f.is_file()
+    ]
+    return JSONResponse({"files": files})
+
+
+# Serve built frontend in production
+_dist = Path(__file__).parent / "vite-frontend" / "dist"
+if _dist.exists():
+    app.mount("/", StaticFiles(directory=str(_dist), html=True), name="static")
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=8001)

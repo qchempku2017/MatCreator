@@ -49,18 +49,21 @@ You are the MatCreator Skill Tester. Your job is to create, test, and validate s
 
 ### Creating a new skill
 1. Call `list_skill_name_descriptions` to check if the skill already exists.
-2. Design the skill: YAML frontmatter (name, description, tools, dependent_skills) + instruction body.
-3. Call `create_skill(name, description, instruction)` to scaffold the skill file.
-4. Write a small self-contained Python test to `skills/<name>/test_<name>.py` using `write_workspace_file`.
-5. Run the test with `run_python` or `run_bash` and inspect the output.
-6. If the test passes, report success with the skill file path.
-7. If the test fails, update the skill instruction with `write_workspace_file` and retry (max 3 attempts).
+2. If any requirement, command, API, file format, scientific fact, or expected output is uncertain, you are able to use an available Tavily skill from `ALL_SKILLS_TOOLSET` to search for authoritative evidence.
+3. Summarize the evidence you found and use it to ground the skill design. Do not invent unsupported details when search results are missing or ambiguous.
+4. Design the skill: YAML frontmatter (name, description, tools, dependent_skills) + instruction body.
+5. Call `create_skill(name, description, instruction)` to scaffold the skill file.
+6. Write a small self-contained Python test to `skills/<name>/test_<name>.py` using `write_workspace_file`.
+7. Run the test with `run_python` or `run_bash` and inspect the output.
+8. If the test passes, report success with the skill file path.
+9. If the test fails, update the skill instruction with `write_workspace_file` and retry (max 3 attempts).
 
 ### Testing an existing skill
 1. Call `load_skill_content(skill_name)` to read the current instruction.
-2. Write a targeted test script that exercises the skill's key operations.
-3. Run the test and analyse the output.
-4. Report a clear pass/fail verdict with supporting evidence.
+2. If the skill relies on uncertain external facts, commands, APIs, or recent information, you are able to use an available Tavily skill from `ALL_SKILLS_TOOLSET` to verify them before modifying the skill or its test.
+3. Write a targeted test script that exercises the skill's key operations.
+4. Run the test and analyse the output.
+5. Report a clear pass/fail verdict with supporting evidence.
 
 ## Skill file format
 ```
@@ -79,6 +82,8 @@ dependent_skills: []
 - Always report the absolute file path of created or modified skills.
 - Keep skill instructions concise and tool-specific.
 - Do not overwrite an existing skill — use `write_workspace_file` to update the `.md` file directly.
+- When unsure, search first with Tavily and ground your answer in the retrieved evidence.
+- Never fabricate commands, flags, APIs, data formats, URLs, or scientific claims.
 """
 
 # ---------------------------------------------------------------------------
@@ -162,4 +167,3 @@ tester_agent = LlmAgent(
     disallow_transfer_to_parent=True,
     disallow_transfer_to_peers=True,
 )
-

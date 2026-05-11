@@ -55,6 +55,9 @@ Every command prints JSON to stdout and exits 0 on success, 1 on error.
 
 Run exactly **one property step at a time**. Do not chain relaxation + SCF in a single step.
 
+If the requested VASP task is complex or unfamiliar, you are able to use Tavily to consult the official VASP Wiki How-to pages before deciding the sequence of calculations: `https://www.vasp.at/wiki/Category:Howto`.
+
+
 ---
 
 ## vasp_tools.py — Command reference
@@ -66,6 +69,9 @@ Run exactly **one property step at a time**. Do not chain relaxation + SCF in a 
 | `--config PATH` | `config.yaml` next to the script | Path to config.yaml |
 | `--incar_tags JSON` | `{}` | Extra INCAR overrides, e.g. `'{"ENCUT": 600}'` |
 | `--potcar_map JSON` | `{}` | Element → POTCAR label, e.g. `'{"Bi": "Bi_d"}'` |
+
+If you are unsure about the meaning, allowed values, or recommended use of an INCAR tag, you are able to use Tavily to query the official VASP Wiki INCAR reference: `https://www.vasp.at/wiki/Category:INCAR_tag`. Do not guess unfamiliar INCAR parameters.
+
 
 All `prepare_*` commands return:
 ```json
