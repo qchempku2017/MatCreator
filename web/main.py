@@ -111,6 +111,16 @@ def _load_json_field(raw_value: str | None, fallback):
         return fallback
 
 
+def _load_agent_graph_data(session_id: str) -> dict:
+    graph_path = get_workspace_root() / "agent_graphs" / f"{session_id}.json"
+    if not graph_path.exists():
+        return {}
+    try:
+        return json.loads(graph_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
 @app.get("/api/session-access/{user_id}")
 async def get_session_access(user_id: str) -> JSONResponse:
     return JSONResponse({"user_id": user_id, "is_admin": _is_admin(user_id)})
@@ -154,10 +164,13 @@ async def get_user_session(user_id: str, session_id: str) -> JSONResponse:
 
     summary = _session_row_to_summary(session)
     summary["state"] = _load_json_field(session["state"], {})
-    summary["events"] = [
+    events = [
         _load_json_field(row["event_data"], {})
         for row in event_rows
     ]
+    # Return the canonical session history as-is so the frontend reflects only
+    # what was actually persisted in the session DB.
+    summary["events"] = events
     return JSONResponse(summary)
 
 
@@ -170,12 +183,8 @@ async def list_all_sessions(user_id: str = Query(..., description="Current signe
 
 @app.get("/api/agent-graph/{session_id}")
 async def get_agent_graph(session_id: str) -> JSONResponse:
-    graph_path = get_workspace_root() / "agent_graphs" / f"{session_id}.json"
-    if not graph_path.exists():
-        return JSONResponse({"session_id": session_id, "nodes": {}, "edges": [], "updated_at": None})
-    try:
-        data = json.loads(graph_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    data = _load_agent_graph_data(session_id)
+    if not data:
         return JSONResponse({"session_id": session_id, "nodes": {}, "edges": [], "updated_at": None})
     return JSONResponse(data)
 

@@ -45,6 +45,20 @@ const loginSubmit = document.getElementById("login-submit");
 const userDisplay = document.getElementById("user-display");
 const editUserBtn = document.getElementById("edit-user");
 
+function autoResizeTextInput() {
+  if (!textInput) return;
+  textInput.style.height = "auto";
+  const computed = window.getComputedStyle(textInput);
+  const lineHeight = parseFloat(computed.lineHeight) || 24;
+  const maxHeight = lineHeight * 3;
+  const nextHeight = Math.min(textInput.scrollHeight, maxHeight);
+  textInput.style.height = `${nextHeight}px`;
+  textInput.style.overflowY = textInput.scrollHeight > maxHeight ? "auto" : "hidden";
+}
+
+autoResizeTextInput();
+textInput?.addEventListener("input", autoResizeTextInput);
+
 sessionIdEl.textContent = state.sessionId;
 if (state.userId) userDisplay.textContent = state.userId;
 
@@ -190,6 +204,16 @@ class AgentGraphView {
       if (levels[id] !== undefined && levels[id] >= minLevel) return;
       levels[id] = minLevel;
 
+      const currentType = nodeMap[id]?.type;
+      if (currentType === "orchestrator") {
+        (children[id] || []).forEach((kid) => assign(kid, 1));
+        return;
+      }
+      if (currentType === "planning") {
+        (children[id] || []).forEach((kid) => assign(kid, 2));
+        return;
+      }
+
       const kids = (children[id] || []).slice().sort((a, b) => {
         const ta = nodeMap[a]?.start_time ? new Date(nodeMap[a].start_time).getTime() : Infinity;
         const tb = nodeMap[b]?.start_time ? new Date(nodeMap[b].start_time).getTime() : Infinity;
@@ -220,6 +244,71 @@ class AgentGraphView {
 
     roots.forEach(r => assign(r, 0));
     return levels;
+  }
+
+  _buildDisplayEdges(rawNodes, edges) {
+    const nodeMap = Object.fromEntries(rawNodes.map((n) => [n.id, n]));
+    const phaseTypes = new Set(["planning", "execution", "tester"]);
+    const displayEdges = [];
+    const phaseNodes = rawNodes
+      .filter((n) => n.parent_id === "orchestrator" && phaseTypes.has(n.type))
+      .sort((a, b) => {
+        const ta = a.start_time ? new Date(a.start_time).getTime() : Infinity;
+        const tb = b.start_time ? new Date(b.start_time).getTime() : Infinity;
+        return ta - tb;
+      });
+
+    const planningNodes = phaseNodes.filter((n) => n.type === "planning");
+    const childPhaseNodes = phaseNodes.filter((n) => n.type !== "planning");
+
+    planningNodes.forEach((planning) => {
+      displayEdges.push({
+        id: `phase__orchestrator__${planning.id}`,
+        from: "orchestrator",
+        to: planning.id,
+      });
+    });
+
+    childPhaseNodes.forEach((node) => {
+      let parentPlanning = null;
+      const nodeStart = node.start_time ? new Date(node.start_time).getTime() : Infinity;
+
+      for (const planning of planningNodes) {
+        const planningStart = planning.start_time ? new Date(planning.start_time).getTime() : -Infinity;
+        if (planningStart <= nodeStart) {
+          parentPlanning = planning;
+        } else {
+          break;
+        }
+      }
+
+      displayEdges.push({
+        id: `phase__${(parentPlanning || { id: "orchestrator" }).id}__${node.id}`,
+        from: parentPlanning ? parentPlanning.id : "orchestrator",
+        to: node.id,
+      });
+    });
+
+    (edges || []).forEach((edge) => {
+      const fromNode = nodeMap[edge.from];
+      const toNode = nodeMap[edge.to];
+      if (!fromNode || !toNode) return;
+
+      const isTopLevelPhaseEdge =
+        edge.from === "orchestrator" &&
+        toNode.parent_id === "orchestrator" &&
+        phaseTypes.has(toNode.type);
+
+      if (isTopLevelPhaseEdge) return;
+
+      displayEdges.push({
+        id: edge.id || `${edge.from}__${edge.to}`,
+        from: edge.from,
+        to: edge.to,
+      });
+    });
+
+    return displayEdges;
   }
 
   _resizeSurface(levels) {
@@ -253,7 +342,8 @@ class AgentGraphView {
 
     const rawNodes = Object.values(graphData.nodes);
     this._nodeData = graphData.nodes;
-    const levels = this._computeLevels(rawNodes, graphData.edges || []);
+    const displayEdges = this._buildDisplayEdges(rawNodes, graphData.edges || []);
+    const levels = this._computeLevels(rawNodes, displayEdges);
     this._resizeSurface(levels);
 
     rawNodes.forEach((raw) => {
@@ -266,11 +356,23 @@ class AgentGraphView {
       }
     });
 
+    const displayEdgeIds = new Set(displayEdges.map((e) => e.id || `${e.from}__${e.to}`));
+    this._edges.getIds().forEach((edgeId) => {
+      if (!displayEdgeIds.has(edgeId)) this._edges.remove(edgeId);
+    });
+
     const existingEdgeIds = new Set(this._edges.getIds());
-    (graphData.edges || []).forEach((e) => {
-      const edgeId = `${e.from}__${e.to}`;
+    displayEdges.forEach((e) => {
+      const edgeId = e.id || `${e.from}__${e.to}`;
       if (!existingEdgeIds.has(edgeId)) {
-        this._edges.add({ id: edgeId, from: e.from, to: e.to });
+        this._edges.add({
+          id: edgeId,
+          from: e.from,
+          to: e.to,
+          hidden: false,
+          physics: false,
+          smooth: { type: "cubicBezier", forceDirection: "vertical" },
+        });
       }
     });
 
@@ -805,12 +907,34 @@ function addMessage(role, content) {
   return div;
 }
 
+function getFunctionCall(part) {
+  return part?.functionCall || part?.function_call || null;
+}
+
+function getFunctionResponse(part) {
+  return part?.functionResponse || part?.function_response || null;
+}
+
+function getPlotPaths(response) {
+  const paths = [];
+  const add = (path) => {
+    if (typeof path === "string" && path && !paths.includes(path)) paths.push(path);
+  };
+  add(response?.plot_path);
+  if (Array.isArray(response?.plot_paths)) {
+    response.plot_paths.forEach(add);
+  }
+  return paths;
+}
+
 // Render a typed timeline array into a container element, mirroring
 // Streamlit's render_stream_timeline: thoughts and tool calls go into
 // collapsible <details> blocks; text parts render as markdown;
 // plot_path responses render as inline images.
-function renderTimeline(container, timeline) {
+function renderTimeline(container, timeline, shownPlotPaths = null) {
   container.innerHTML = "";
+  const containerPlotPaths = container._plotPaths || new Set();
+  const visiblePlotPaths = new Set();
   for (const item of timeline) {
     if (item.type === "thought") {
       const details = document.createElement("details");
@@ -845,12 +969,18 @@ function renderTimeline(container, timeline) {
       pre.textContent = JSON.stringify(item.response, null, 2);
       details.appendChild(pre);
       container.appendChild(details);
-      // Render inline image if this response produced a plot
-      if (item.response && item.response.plot_path) {
+      for (const plotPath of getPlotPaths(item.response)) {
+        if (
+          visiblePlotPaths.has(plotPath) ||
+          (shownPlotPaths && shownPlotPaths.has(plotPath) && !containerPlotPaths.has(plotPath))
+        ) {
+          continue;
+        }
+        visiblePlotPaths.add(plotPath);
         const img = document.createElement("img");
-        img.src = pathToApiUrl(item.response.plot_path);
+        img.src = pathToApiUrl(plotPath);
         img.className = "timeline-image";
-        img.alt = item.response.plot_path.split("/").pop();
+        img.alt = plotPath.split("/").pop();
         container.appendChild(img);
       }
       // Render inline "View Structure" button for structure tool responses
@@ -871,12 +1001,14 @@ function renderTimeline(container, timeline) {
       container.appendChild(div);
     }
   }
+  container._plotPaths = visiblePlotPaths;
+  visiblePlotPaths.forEach((path) => shownPlotPaths?.add(path));
   scrollToBottom();
 }
 
 // Create an agent message div with an inner timeline container, append to
 // chatArea, and return the inner container for live updates.
-function addAgentTimelineMessage(timeline) {
+function addAgentTimelineMessage(timeline, shownPlotPaths = null) {
   const outer = document.createElement("div");
   outer.className = "message agent-message";
   outer.appendChild(createAgentAvatarEl());
@@ -887,7 +1019,7 @@ function addAgentTimelineMessage(timeline) {
   bubble.appendChild(inner);
   outer.appendChild(bubble);
   chatArea.appendChild(outer);
-  renderTimeline(inner, timeline);
+  renderTimeline(inner, timeline, shownPlotPaths);
   return inner;
 }
 
@@ -1053,6 +1185,7 @@ async function loadSession(sessionId) {
     if (!resp.ok) return;
     const sessionData = await resp.json();
     const events = sessionData.events || [];
+    let shownPlotPaths = new Set();
 
     // Rebuild chat from server-canonical state
     chatArea.innerHTML = "";
@@ -1061,8 +1194,9 @@ async function loadSession(sessionId) {
     const frById = {};
     for (const event of events) {
       for (const p of (event.content?.parts || [])) {
-        if (p.functionResponse?.id) {
-          frById[p.functionResponse.id] = p.functionResponse;
+        const fr = getFunctionResponse(p);
+        if (fr?.id) {
+          frById[fr.id] = fr;
         }
       }
     }
@@ -1074,6 +1208,7 @@ async function loadSession(sessionId) {
       if (role === "user") {
         const text = parts.map((p) => p.text || "").join("");
         if (text) addMessage("user", text);
+        shownPlotPaths = new Set();
         continue;
       }
 
@@ -1083,8 +1218,8 @@ async function loadSession(sessionId) {
       for (const p of parts) {
         if (p.thought) {
           timeline.push({ type: "thought", text: p.text || "" });
-        } else if (p.functionCall) {
-          const fc = p.functionCall;
+        } else if (getFunctionCall(p)) {
+          const fc = getFunctionCall(p);
           const matchedFr = frById[fc.id];
           timeline.push({
             type: "function_call",
@@ -1100,8 +1235,8 @@ async function loadSession(sessionId) {
               response: matchedFr.response || {},
             });
           }
-        } else if (p.functionResponse) {
-          const fr = p.functionResponse;
+        } else if (getFunctionResponse(p)) {
+          const fr = getFunctionResponse(p);
           const alreadyMatched = timeline.some(
             (t) => t.type === "function_response" && t.id === fr.id
           );
@@ -1125,7 +1260,7 @@ async function loadSession(sessionId) {
       }
 
       if (timeline.length > 0) {
-        addAgentTimelineMessage(timeline);
+        addAgentTimelineMessage(timeline, shownPlotPaths);
       }
     }
 
@@ -1220,6 +1355,7 @@ async function sendMessage(message) {
 
   addMessage("user", message);
   textInput.value = "";
+  autoResizeTextInput();
 
   if (!state.sessionReady) await createSession();
 
@@ -1239,6 +1375,7 @@ async function sendMessage(message) {
   const timeline = [];
   let timelineContainer = null;
   let accText = "";
+  const shownPlotPaths = new Set();
 
   try {
     const resp = await fetch("/run_sse", {
@@ -1293,9 +1430,9 @@ async function sendMessage(message) {
             }
 
             if (timeline.length > 0 && !timelineContainer) {
-              timelineContainer = addAgentTimelineMessage(timeline);
+              timelineContainer = addAgentTimelineMessage(timeline, shownPlotPaths);
             } else if (timelineContainer) {
-              renderTimeline(timelineContainer, timeline);
+              renderTimeline(timelineContainer, timeline, shownPlotPaths);
             }
           }
         } catch (_) {
@@ -1308,7 +1445,6 @@ async function sendMessage(message) {
   } finally {
     await agentGraph._poll(state.sessionId);
     agentGraph.stopPolling();
-    await loadSession(state.sessionId);
     await refreshSessionFiles();
   }
 }

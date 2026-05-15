@@ -23,7 +23,7 @@ body {
 }
 
 .page {
-  max-width: 1600px;
+  max-width: 2000px;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
@@ -285,7 +285,8 @@ body {
   background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border);
   border-radius: 14px; padding: 12px;
 }
-.text-input { flex: 1; background: transparent; border: none; color: var(--text); font-size: 15px; resize: none; max-height: 180px; line-height: 1.5; }
+.text-input { flex: 1; background: transparent; border: none; color: var(--text); font-size: 15px; resize: none; line-height: 1.5; }
+.input-container .text-input { min-height: calc(1.5em * 1); max-height: calc(1.5em * 3); overflow-y: auto; }
 .text-input:focus { outline: none; }
 .send-btn { background: rgba(255,255,255,0.04); border: 1px solid var(--border); color: var(--text); width: 44px; height: 38px; border-radius: 12px; cursor: pointer; }
 
@@ -312,6 +313,7 @@ body {
 }
 details.panel-block:not([open]) > summary.block-header::after { transform: rotate(-90deg); }
 .panel-block-body { max-height: 220px; overflow-y: auto; margin-top: 10px; }
+.session-files-body { max-height: 600px; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .pill {
   padding: 10px 14px; border-radius: 999px;

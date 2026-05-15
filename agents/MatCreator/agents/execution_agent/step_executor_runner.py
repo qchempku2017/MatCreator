@@ -23,6 +23,21 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _response_dict(response) -> dict:
+    """Best-effort conversion for ADK function response payloads."""
+    if isinstance(response, dict):
+        return response
+    try:
+        return dict(response or {})
+    except (TypeError, ValueError):
+        return {}
+
+
+def _append_unique(values: list[str], value) -> None:
+    if isinstance(value, str) and value and value not in values:
+        values.append(value)
+
+
 async def run_step_executor(
     step_number: int,
     action: str,
@@ -49,8 +64,8 @@ async def run_step_executor(
     logger.debug("[step_executor_runner] step %d workspace: %s", step_number, step_workspace)
 
     graph = AgentGraphLogger(session_id)
-    step_id = f"step_{step_number}"
     parent_id = tool_context.state.get("_graph_exec_node_id", "orchestrator")
+    step_id = f"{parent_id}__step_{step_number}"
     graph.log_node_start(step_id, "step", f"Step {step_number}", parent_id)
 
     # Serialize input as user message (matches AgentTool input_schema path)
@@ -106,6 +121,7 @@ async def run_step_executor(
     # Run sub-agent and forward state deltas to parent (mirrors AgentTool loop)
     step_state_delta: dict = {}
     pending_tool_calls: dict[str, dict] = {}  # tool name -> partial record
+    plot_paths: list[str] = []
 
     async with aclosing(
         runner.run_async(
@@ -151,6 +167,9 @@ async def run_step_executor(
                             "content": f"{fc.name}({str(dict(fc.args or {}))[:500]})",
                         })
                     elif fr:
+                        response = _response_dict(fr.response)
+                        _append_unique(plot_paths, response.get("plot_path"))
+
                         record = pending_tool_calls.pop(fr.name, {"name": fr.name, "start_time": _now()})
                         record["result_summary"] = str(fr.response)[:300]
                         record["end_time"] = _now()
@@ -177,7 +196,11 @@ async def run_step_executor(
             summary=result.concise_summary,
             artifacts=result.artifacts,
         )
-        return result.model_dump(exclude_none=True)
+        payload = result.model_dump(exclude_none=True)
+        if plot_paths:
+            payload["plot_paths"] = plot_paths
+            payload["plot_path"] = plot_paths[0]
+        return payload
 
     # submit_step_result was never called — surface as replanning signal
     logger.warning("[step_executor_runner] step %d: submit_step_result was never called", step_number)
