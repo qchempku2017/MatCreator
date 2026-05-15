@@ -2,6 +2,28 @@
 
 <!-- version list -->
 
+## v1.5.0 (2026-05-15)
+
+### Bug Fixes
+
+- Add admin user
+  ([`8707aa0`](https://github.com/nlz25/PFD_Agent/commit/8707aa038d08a9babc7e473957568d837751dd8b))
+
+- Deduplicate LLM response
+  ([`12e35fa`](https://github.com/nlz25/PFD_Agent/commit/12e35fa4ab5b14f782e6fac74ad8ac53af9177b3))
+
+- Improved frontend UI
+  ([`e2a04b8`](https://github.com/nlz25/PFD_Agent/commit/e2a04b82ea1d815df7312a487b5451337fb23d1b))
+
+- Refine agent_graph, function flow ,picture display
+  ([`392df63`](https://github.com/nlz25/PFD_Agent/commit/392df63b0fb9f3b963aa52e6e515760a947cc15d))
+
+### Features
+
+- Graph based memory system
+  ([`5208601`](https://github.com/nlz25/PFD_Agent/commit/5208601e73bd50e5bede55c2eb7cb363deb8f192))
+
+
 ## v1.4.0 (2026-05-12)
 
 ### Bug Fixes
