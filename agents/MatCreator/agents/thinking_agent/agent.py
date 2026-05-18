@@ -14,7 +14,7 @@ from .planning import validate_plan
 from .intent import validate_intent
 from .summarize import validate_summarize
 from .session_summary import write_session_summary
-from ...skill import ALL_SKILLS, ALL_SKILLS_TOOLSET, refresh_skills
+from ...skill import ALL_SKILLS, refresh_skills, ALL_SKILLS_TOOLSET
 from ...guide import ALL_GUIDES
 from .memory import query_knowledge_graph, save_to_knowledge_graph, update_memory, read_memory, run_synthesizer
 from ...tools.workspace_tools import (
@@ -198,7 +198,6 @@ You are MatCreator, an AI assistant for computational materials science workflow
 Your role here is **PLANNING ONLY**: you are responsible only for planning; all concrete execution steps must be delegated to the execution agent.
 
 ## Context
-- Available skills: {skills}
 - Available guides: {guides}
 - Goal: {goal}
 - Plan: {plan}
@@ -246,9 +245,9 @@ def before_agent_callback(callback_context: CallbackContext) -> None:
         if key not in state:
             callback_context.state[key] = default
     
-    callback_context.state["skills"] = "\n".join(
-        f"- {s.name}: {s.description}" for s in ALL_SKILLS
-    ) if ALL_SKILLS else "No skills available."
+    #callback_context.state["skills"] = "\n".join(
+    #    f"- {s.name}: {s.description}" for s in ALL_SKILLS
+    #) if ALL_SKILLS else "No skills available."
 
     callback_context.state["guides"] = "\n".join(
         f"- {g.name}: {g.description}" for g in ALL_GUIDES
@@ -305,7 +304,7 @@ thinking_agent = LlmAgent(
         show_artifact,
         show_plot,
         show_structure,
-        ALL_SKILLS_TOOLSET
+        ALL_SKILLS_TOOLSET,
     ],
     before_agent_callback=before_agent_callback,
 )

@@ -41,7 +41,7 @@ def _append_unique(values: list[str], value) -> None:
 async def run_step_executor(
     step_number: int,
     action: str,
-    skill_name: str,
+    suggested_skills: list[str],
     workspace_dir: str,
     prior_context: Optional[str] = None,
     *,
@@ -72,7 +72,7 @@ async def run_step_executor(
     step_input = StepExecutorInput(
         step_number=step_number,
         action=action,
-        skill_name=skill_name,
+        suggested_skills=suggested_skills,
         workspace_dir=str(step_workspace),
         prior_context=prior_context,
     )
@@ -87,7 +87,7 @@ async def run_step_executor(
         "action": action,
         "workspace_dir": str(step_workspace),
         "prior_context": prior_context,
-        "skill_name": skill_name,
+        "suggested_skills": suggested_skills,
     })
 
     # Create runner with isolated session (mirrors AgentTool)
