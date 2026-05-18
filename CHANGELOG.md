@@ -2,6 +2,26 @@
 
 <!-- version list -->
 
+## v1.5.2 (2026-05-18)
+
+### Bug Fixes
+
+- Add history review tools and cancelllation
+  ([`7842fc7`](https://github.com/nlz25/PFD_Agent/commit/7842fc788197570d3466d3c0402d8f03b924afe9))
+
+- Coarse-grained planning
+  ([`6428033`](https://github.com/nlz25/PFD_Agent/commit/642803348aee248a2243b63333078ddc1d8cd58e))
+
+- Minor issues with planning
+  ([`7f2fa22`](https://github.com/nlz25/PFD_Agent/commit/7f2fa2275898aea27cd8e6f29416caeac6badf3f))
+
+- Update dpdisp skill
+  ([`3ba73a4`](https://github.com/nlz25/PFD_Agent/commit/3ba73a47eb79660970b448bd52befde8af729bf4))
+
+- Update README
+  ([`c1d1aad`](https://github.com/nlz25/PFD_Agent/commit/c1d1aad27e86b50c79c03f0b1a169d5649beb5b4))
+
+
 ## v1.5.1 (2026-05-18)
 
 ### Bug Fixes
