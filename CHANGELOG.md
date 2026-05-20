@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v1.6.0 (2026-05-20)
+
+### Bug Fixes
+
+- Improve the benchmark mode
+  ([`cb31245`](https://github.com/nlz25/PFD_Agent/commit/cb312454141c435d15ac3092741404438d673e9e))
+
+### Features
+
+- Sub-step decomposition for execution agent
+  ([`a542d94`](https://github.com/nlz25/PFD_Agent/commit/a542d942f9d9226f54a706c7c829f287a33ea48b))
+
+
 ## v1.5.2 (2026-05-18)
 
 ### Bug Fixes
