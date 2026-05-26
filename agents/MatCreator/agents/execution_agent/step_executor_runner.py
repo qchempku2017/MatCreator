@@ -171,6 +171,7 @@ async def run_step_executor(
     suggested_skills: list[str],
     workspace_dir: str,
     prior_context: Optional[str] = None,
+    node_id: Optional[str] = None,
     *,
     tool_context: ToolContext,
 ) -> dict:
@@ -192,25 +193,28 @@ async def run_step_executor(
             ),
         }
 
+    # Use node_id for workspace/label when provided (DAG mode); fall back to step_number.
+    effective_id = node_id if node_id else str(step_number)
+
     # Workspace: nested under parent when called recursively; under session workdir at depth 0.
     if recursion_depth > 0:
         parent_workspace = Path(tool_context.state.get("workspace_dir", ""))
-        step_workspace = parent_workspace / f"sub_{step_number}"
+        step_workspace = parent_workspace / f"sub_{effective_id}"
     else:
         plan_exec_id = tool_context.state.get("plan_exec_id")
         if not plan_exec_id:
             plan_exec_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
             tool_context.state["plan_exec_id"] = plan_exec_id
-        step_workspace = get_session_workdir(session_id) / plan_exec_id / f"step_{step_number}"
+        step_workspace = get_session_workdir(session_id) / plan_exec_id / f"node_{effective_id}"
     step_workspace.mkdir(parents=True, exist_ok=True)
-    logger.debug("[step_executor_runner] depth=%d step %d workspace: %s", recursion_depth, step_number, step_workspace)
+    logger.debug("[step_executor_runner] depth=%d node %s workspace: %s", recursion_depth, effective_id, step_workspace)
 
     graph = AgentGraphLogger(session_id)
     parent_id = tool_context.state.get("_graph_exec_node_id", "orchestrator")
-    step_id = f"{parent_id}__step_{step_number}"
+    step_id = f"{parent_id}__node_{effective_id}"
     parent_path = tool_context.state.get("_step_label_path", "")
-    step_label_path = f"{parent_path}-{step_number}" if parent_path else str(step_number)
-    graph.log_node_start(step_id, "step", f"Step {step_label_path}", parent_id)
+    step_label_path = f"{parent_path}-{effective_id}" if parent_path else effective_id
+    graph.log_node_start(step_id, "step", f"Node {step_label_path}", parent_id)
 
     # Serialize input as user message (matches AgentTool input_schema path)
     step_input = StepExecutorInput(
@@ -227,6 +231,7 @@ async def run_step_executor(
 
     # Log input parameters
     graph.log_node_input(step_id, {
+        "node_id": effective_id,
         "step_number": step_number,
         "action": action,
         "workspace_dir": str(step_workspace),
@@ -238,14 +243,14 @@ async def run_step_executor(
     if is_cancellation_requested(session_id) or is_step_cancellation_requested(session_id, step_number):
         reason = get_cancellation_reason(session_id) or "user_requested"
         logger.warning(
-            "[CANCEL] Step %d aborted before start (session=%s, reason=%s)",
-            step_number, session_id, reason,
+            "[CANCEL] Node %s aborted before start (session=%s, reason=%s)",
+            effective_id, session_id, reason,
         )
         graph.log_node_complete(step_id, "failed", summary=f"Cancelled before start: {reason}")
         clear_step_cancellation(session_id, step_number)
         return {
             "status": "cancelled",
-            "message": f"Step {step_number} skipped: execution cancellation was requested ({reason}).",
+            "message": f"Node {effective_id} skipped: execution cancellation was requested ({reason}).",
         }
 
     # Create runner with isolated session (mirrors AgentTool)

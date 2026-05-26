@@ -211,6 +211,38 @@ async def list_all_sessions(user_id: str = Query(..., description="Current signe
     return JSONResponse(_query_session_summaries())
 
 
+def _load_execution_graph(session_id: str) -> dict:
+    """Read execution_graph from the SQLite session state."""
+    if not SESSION_DB_PATH.exists():
+        return {"nodes": {}, "edges": []}
+    try:
+        with sqlite3.connect(SESSION_DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT state FROM sessions WHERE app_name = ? AND id = ?",
+                (APP_NAME, session_id),
+            ).fetchone()
+            if row is None:
+                return {"nodes": {}, "edges": []}
+            state = _load_json_field(row["state"], {})
+            raw = state.get("execution_graph")
+            if isinstance(raw, str):
+                raw = _load_json_field(raw, None)
+            if not isinstance(raw, dict):
+                return {"nodes": {}, "edges": []}
+            return raw
+    except sqlite3.Error:
+        return {"nodes": {}, "edges": []}
+
+
+@app.get("/api/execution-graph/{session_id}")
+async def get_execution_graph(session_id: str) -> JSONResponse:
+    """Return the execution graph (plan DAG) from session state for frontend visualization."""
+    data = _load_execution_graph(session_id)
+    return JSONResponse(data)
+
+
+
 @app.get("/api/agent-graph/{session_id}")
 async def get_agent_graph(session_id: str) -> JSONResponse:
     data = _load_agent_graph_data(session_id)

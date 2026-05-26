@@ -22,9 +22,8 @@ Every invocation runs a planning-first loop:
 
 from __future__ import annotations
 
-import json
 import logging
-from typing import AsyncGenerator, List, Optional
+from typing import AsyncGenerator, Optional
 
 from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
@@ -46,18 +45,24 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def _extract_steps(plan) -> List[dict]:
-    """Return the list of step dicts from a plan value (dict or JSON string)."""
-    if not plan:
-        return []
-    if isinstance(plan, str):
-        try:
-            plan = json.loads(plan)
-        except json.JSONDecodeError:
-            return []
-    if isinstance(plan, dict):
-        return plan.get("steps", [])
-    return []
+def _validate_graph_ready(state: dict) -> tuple[bool, str]:
+    """Return (ready, reason) — ready=True when at least one pending node exists."""
+    graph = state.get("execution_graph")
+    if not graph or not isinstance(graph, dict):
+        return False, "No execution_graph in session state."
+    nodes = graph.get("nodes") or {}
+    if not nodes:
+        return False, "Execution graph has no nodes."
+    pending = [nid for nid, n in nodes.items() if n.get("status") == "pending"]
+    if not pending:
+        return False, f"No pending nodes (all {len(nodes)} node(s) are complete or blocked)."
+    return True, f"{len(pending)} pending node(s) ready."
+
+
+def _is_graph_complete(state: dict) -> bool:
+    """Return True when every node in the graph reached 'success'."""
+    nodes = (state.get("execution_graph") or {}).get("nodes") or {}
+    return bool(nodes) and all(n.get("status") == "success" for n in nodes.values())
 
 
 # ---------------------------------------------------------------------------
@@ -120,19 +125,20 @@ class PlanningExecutionOrchestrator(BaseAgent):
 
             # ── Execution phase ───────────────────────────────────────────────
             if execution_approved:
-                plan = state.get("plan")
-                steps = _extract_steps(plan)
-                if not steps:
-                    logger.warning("[orchestrator] execution approved but plan has no steps")
+                ready, reason = _validate_graph_ready(state)
+                if not ready:
+                    logger.warning("[orchestrator] execution approved but: %s", reason)
                     state["execution_approved"] = False
                     continue  # loop back to planner
 
-                total_steps = len(steps)
-                resume_from = state.get("current_step_index", 0)
+                total_nodes = len((state.get("execution_graph") or {}).get("nodes") or {})
+                pending_count = sum(
+                    1 for n in (state.get("execution_graph") or {}).get("nodes", {}).values()
+                    if n.get("status") == "pending"
+                )
                 logger.info(
-                    "[orchestrator] delegating %d steps to execution_orchestrator (resuming from step %d)",
-                    total_steps - resume_from,
-                    resume_from,
+                    "[orchestrator] delegating %d/%d pending nodes to execution_orchestrator",
+                    pending_count, total_nodes,
                 )
 
                 exec_id = f"execution_{loop_idx}"
@@ -158,11 +164,10 @@ class PlanningExecutionOrchestrator(BaseAgent):
                             "[CANCEL COMPLETE] Execution fully stopped for session %s — returning to planner",
                             state.get("session_id", ""),
                         )
-                    # current_step_index preserved by execution_orchestrator for resumption
                 else:
-                    logger.info("[orchestrator] all %d steps complete", total_steps)
+                    logger.info("[orchestrator] all %d nodes complete", total_nodes)
                     graph.log_node_complete(exec_id, "success")
-                    state["current_step_index"] = 0
+                    state["_node_exec_counter"] = 0
 
                     # Extract knowledge from the completed session
                     try:

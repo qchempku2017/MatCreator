@@ -194,6 +194,27 @@ class AgentGraphLogger:
                 return True
         return False
 
+    def cancel_step_node_by_id(self, node_id: str, summary: str = "Cancelled by user") -> bool:
+        """Find the running step node with input.node_id==node_id and mark it failed.
+
+        Used for DAG-mode cancellation where nodes are identified by string node_id.
+        Returns True if a matching node was found and updated.
+        """
+        graph = self._read()
+        now = _now()
+        for node in graph["nodes"].values():
+            if (
+                node.get("type") == "step"
+                and node.get("status") == "running"
+                and (node.get("input") or {}).get("node_id") == node_id
+            ):
+                node["status"] = "failed"
+                node["end_time"] = now
+                node["summary"] = summary
+                self._write(graph)
+                return True
+        return False
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------

@@ -598,10 +598,223 @@ class AgentGraphView {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Execution Plan Graph (floating popup in chat column)
+// ---------------------------------------------------------------------------
+
+const PLAN_NODE_STATUS_COLORS = {
+  pending:   { bg: "#374151", border: "#6B7280", font: "#9CA3AF" },
+  running:   { bg: "#FBBF24", border: "#F59E0B", font: "#1a1a1a" },
+  success:   { bg: "#10B981", border: "#059669", font: "#fff" },
+  failed:    { bg: "#EF4444", border: "#DC2626", font: "#fff" },
+  blocked:   { bg: "#1F2937", border: "#374151", font: "#4B5563" },
+};
+
+class ExecutionPlanView {
+  constructor(containerId) {
+    this._container = document.getElementById(containerId);
+    this._network = null;
+    this._pollInterval = null;
+    this._didInitialFit = false;
+    this._structureKey = null;
+    this._init();
+  }
+
+  _init() {
+    if (!this._container) return;
+    const options = {
+      layout: {
+        hierarchical: {
+          direction: "UD",
+          sortMethod: "directed",
+          nodeSpacing: 120,
+          levelSeparation: 90,
+          blockShifting: true,
+          edgeMinimization: true,
+        },
+      },
+      physics: { enabled: false },
+      edges: {
+        arrows: { to: { enabled: true, scaleFactor: 0.6 } },
+        color: { color: "#4B5563", highlight: "#9CA3AF" },
+        width: 1.5,
+        smooth: { type: "cubicBezier", forceDirection: "vertical" },
+      },
+      nodes: {
+        shape: "box",
+        borderWidth: 2,
+        borderWidthSelected: 3,
+        font: { size: 14, face: "Manrope, sans-serif" },
+        margin: { top: 8, bottom: 8, left: 12, right: 12 },
+      },
+      interaction: {
+        hover: true,
+        tooltipDelay: 200,
+        dragNodes: true,
+        dragView: true,
+        zoomView: true,
+      },
+    };
+    this._network = new Network(
+      this._container,
+      { nodes: new DataSet([]), edges: new DataSet([]) },
+      options
+    );
+  }
+
+  _computeLevels(nodeIds, rawEdges) {
+    const inDeg = Object.fromEntries(nodeIds.map((id) => [id, 0]));
+    const adj   = Object.fromEntries(nodeIds.map((id) => [id, []]));
+    rawEdges.forEach((e) => {
+      const from = Array.isArray(e) ? e[0] : e.from;
+      const to   = Array.isArray(e) ? e[1] : e.to;
+      if (adj[from]) adj[from].push(to);
+      if (to in inDeg) inDeg[to]++;
+    });
+    const levels = {};
+    const queue = nodeIds.filter((id) => inDeg[id] === 0);
+    queue.forEach((id) => { levels[id] = 0; });
+    while (queue.length) {
+      const curr = queue.shift();
+      (adj[curr] || []).forEach((nxt) => {
+        levels[nxt] = Math.max(levels[nxt] ?? 0, (levels[curr] ?? 0) + 1);
+        if (--inDeg[nxt] === 0) queue.push(nxt);
+      });
+    }
+    nodeIds.forEach((id) => { if (!(id in levels)) levels[id] = 0; });
+    return levels;
+  }
+
+  _visNode(nodeId, node, level) {
+    const status = node.status || "pending";
+    const isRunning = status === "running";
+    const colors = PLAN_NODE_STATUS_COLORS[status] || PLAN_NODE_STATUS_COLORS.pending;
+    return {
+      id: nodeId,
+      label: node.label || nodeId,
+      title: node.action || nodeId,
+      level,
+      color: {
+        background: colors.bg,
+        border: colors.border,
+        highlight: { background: colors.border, border: colors.border },
+      },
+      font: { color: colors.font, size: 14 },
+      shapeProperties: isRunning ? { borderDashes: [4, 3] } : {},
+      borderWidth: isRunning ? 2.5 : 2,
+    };
+  }
+
+  update(graphData) {
+    if (!graphData || typeof graphData.nodes !== "object") return;
+    const nodeEntries = Object.entries(graphData.nodes);
+    if (nodeEntries.length === 0) return;
+
+    // Auto-show popup on first data
+    if (!this._didInitialFit && planGraphPopup?.classList.contains("hidden")) {
+      showPlanGraph();
+    }
+
+    const rawEdges = graphData.edges || [];
+    const nodeIds  = nodeEntries.map(([id]) => id);
+    const levels   = this._computeLevels(nodeIds, rawEdges);
+
+    const visNodes = nodeEntries.map(([id, n]) => this._visNode(id, n, levels[id] ?? 0));
+    const visEdges = rawEdges.map((e) => {
+      const from = Array.isArray(e) ? e[0] : e.from;
+      const to   = Array.isArray(e) ? e[1] : e.to;
+      return {
+        id: `e__${from}__${to}`,
+        from,
+        to,
+        physics: false,
+        hidden: false,
+        smooth: { type: "cubicBezier", forceDirection: "vertical" },
+      };
+    });
+
+    // Rebuild via setData so hierarchical layout sees nodes + edges together.
+    // Re-fit only when structure changes to avoid jarring jumps on status updates.
+    const structureKey = JSON.stringify({ ids: [...nodeIds].sort(), edges: rawEdges });
+    const structureChanged = structureKey !== this._structureKey;
+    this._network.setData({ nodes: new DataSet(visNodes), edges: new DataSet(visEdges) });
+    if (structureChanged || !this._didInitialFit) {
+      this._structureKey = structureKey;
+      this._network.fit({ animation: { duration: 300, easingFunction: "easeInOutQuad" } });
+      this._didInitialFit = true;
+    }
+  }
+
+  startPolling(sessionId) {
+    this._setStatus("polling");
+    this._poll(sessionId);
+    this._pollInterval = setInterval(() => this._poll(sessionId), 2000);
+  }
+
+  stopPolling() {
+    if (this._pollInterval) {
+      clearInterval(this._pollInterval);
+      this._pollInterval = null;
+    }
+    this._setStatus("idle");
+  }
+
+  async _poll(sessionId) {
+    try {
+      const resp = await fetch(`/api/execution-graph/${sessionId}`);
+      if (!resp.ok) return;
+      const data = await resp.json();
+      this.update(data);
+    } catch (_) {}
+  }
+
+  reset() {
+    this._network?.setData({ nodes: new DataSet([]), edges: new DataSet([]) });
+    this._didInitialFit = false;
+    this._structureKey = null;
+    this.stopPolling();
+  }
+
+  notifyLayoutChanged() {
+    this._network?.redraw();
+    this._network?.fit({ animation: false });
+  }
+
+  _setStatus(s) {
+    const el = document.getElementById("plan-graph-status");
+    if (el) { el.textContent = s; el.className = `graph-status status-${s}`; }
+  }
+}
+
 const agentGraph = new AgentGraphView("agent-graph");
+const planGraph = new ExecutionPlanView("plan-graph-canvas");
 
 // ---------------------------------------------------------------------------
-// Left-panel resizing
+// Plan graph popup toggle
+// ---------------------------------------------------------------------------
+
+const planGraphPopup = document.getElementById("plan-graph-popup");
+const planGraphToggleBtn = document.getElementById("plan-graph-toggle");
+const planGraphCloseBtn = document.getElementById("plan-graph-close");
+
+function showPlanGraph() {
+  planGraphPopup?.classList.remove("hidden");
+  planGraph.notifyLayoutChanged();
+}
+
+function hidePlanGraph() {
+  planGraphPopup?.classList.add("hidden");
+}
+
+planGraphToggleBtn?.addEventListener("click", () => {
+  if (planGraphPopup?.classList.contains("hidden")) {
+    showPlanGraph();
+  } else {
+    hidePlanGraph();
+  }
+});
+
+planGraphCloseBtn?.addEventListener("click", hidePlanGraph);
 // ---------------------------------------------------------------------------
 
 function isMobileLayout() {
@@ -795,6 +1008,8 @@ async function applyUsername(name) {
   renderSessionFilesTree([]);
   clearCurrentUploads();
   agentGraph.reset();
+  planGraph.reset();
+  hidePlanGraph();
   await refreshAccess();
   renderUserDisplay();
   hideLoginModal();
@@ -827,6 +1042,8 @@ if (!state.userId) {
     if (localStorage.getItem("mat_sessionId")) {
       state.sessionReady = true;
       await loadSession(state.sessionId);
+      agentGraph.startPolling(state.sessionId);
+      planGraph.startPolling(state.sessionId);
     }
   });
 }
@@ -880,9 +1097,12 @@ async function switchSession(sessionId, owner = state.userId) {
   renderSessionFilesTree([]);
   clearCurrentUploads();
   agentGraph.reset();
+  planGraph.reset();
+  hidePlanGraph();
   await loadSession(sessionId);
   await loadSessions();
   agentGraph.startPolling(sessionId);
+  planGraph.startPolling(sessionId);
 }
 
 refreshSessionsBtn.addEventListener("click", (e) => { e.stopPropagation(); loadSessions(); });
@@ -1641,6 +1861,7 @@ async function sendMessage(message) {
   if (!state.sessionReady) await createSession();
 
   agentGraph.startPolling(state.sessionId);
+  planGraph.startPolling(state.sessionId);
 
   const controller = new AbortController();
   setSendingState(true, controller);
@@ -1731,6 +1952,8 @@ async function sendMessage(message) {
   } finally {
     await agentGraph._poll(state.sessionId);
     agentGraph.stopPolling();
+    await planGraph._poll(state.sessionId);
+    planGraph.stopPolling();
     await refreshSessionFiles();
     setSendingState(false);
   }
@@ -1866,5 +2089,7 @@ resetBtn.addEventListener("click", () => {
   renderSessionFilesTree([]);
   clearCurrentUploads();
   agentGraph.reset();
+  planGraph.reset();
+  hidePlanGraph();
   loadSessions();
 });

@@ -655,6 +655,51 @@ details summary:hover { color: var(--text); }
   font-size: 11px;
 }
 
+/* ── Execution Plan Graph Popup ─────────────────────────── */
+.chat-card { position: relative; }
+
+.plan-graph-popup {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 320px;
+  background: var(--panel);
+  border-top: 2px solid var(--border);
+  border-radius: 0 0 12px 12px;
+  display: flex;
+  flex-direction: column;
+  z-index: 10;
+  box-shadow: 0 -6px 32px rgba(0,0,0,0.6);
+  transition: height 0.2s ease;
+}
+.plan-graph-popup.hidden { display: none; }
+
+.plan-graph-popup-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.plan-graph-popup-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  flex: 1;
+}
+.plan-graph-close-btn {
+  font-size: 11px;
+  padding: 2px 6px;
+  color: var(--muted);
+}
+.plan-graph-canvas {
+  flex: 1;
+  width: 100%;
+  overflow: hidden;
+}
+
 /* ── Responsive ─────────────────────────────────────────── */
 @media (max-width: 1200px) {
   .app-grid { grid-template-columns: 1fr 2.5fr 1.1fr; }

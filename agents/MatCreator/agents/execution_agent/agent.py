@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import List, Optional
 
 from google.adk.agents import LlmAgent
 from google.adk.agents.callback_context import CallbackContext
@@ -12,6 +13,11 @@ from google.adk.tools.tool_context import ToolContext
 from ...constants import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
 from ...workspace import get_session_workdir
 from ..thinking_agent.summarize import validate_summarize
+from ..thinking_agent.planning import (
+    get_ready_nodes,
+    set_node_status,
+    mark_dependents_blocked,
+)
 from .step_executor_runner import run_step_executor
 
 logger = logging.getLogger(__name__)
@@ -25,37 +31,43 @@ _model_base_url = os.environ.get("LLM_BASE_URL", LLM_BASE_URL)
 # ---------------------------------------------------------------------------
 
 _EXECUTION_ORCHESTRATOR_INSTRUCTION = """
-You are the MatCreator Execution Orchestrator. You manage the full execution of all pending plan steps.
+You are the MatCreator Execution Orchestrator. You manage the full execution of a DAG-based plan.
 
 ## Context
 - Goal: {goal}
-- Full plan: {plan}
-- Resume from step number: {current_step_index} (execute steps with step_number > this value)
+- Execution graph: {execution_graph}
 - Workspace directory: {workspace_dir}
 - Prior trajectory: {summarize}
 
 ## Protocol
-1. Identify all plan steps where step_number > {current_step_index}.
-2. For each pending step, call `run_step_executor` with:
-   - `step_number`: the step's number from the plan
-   - `action`: the step's action text
-   - `suggested_skills`: the list of suggested skill names from the plan step
+1. Call `get_ready_nodes()` to find all pending nodes whose predecessors are all 'success'.
+2. For each ready node, call `run_node_executor` with:
+   - `node_id`: the node's ID string
+   - `action`: the node's action text
+   - `suggested_skills`: the list of suggested skill names
    - `workspace_dir`: the workspace directory above
-   - `prior_context`: a brief summary of completed steps (from trajectory, if any)
-3. **Parallelize independent steps**: if consecutive pending steps use different skills
-   and do not share data, issue all their `run_step_executor` calls in a SINGLE response
-   so ADK executes them concurrently.
-4. After each `run_step_executor` result:
-   - `status == "success"`: call `validate_summarize` with key_results, artifacts,
-     concise_summary; then call `set_current_step_index` with the completed step_number.
-   - `status == "needs_replanning"`: call `to_planner` with the replan_reason and STOP.
-     Do not proceed to remaining steps.
-   - `status == "cancelled"`: call `to_planner("execution cancelled by user")` and STOP.
-     Do not proceed to remaining steps.
-5. Continue until all steps complete or `to_planner` is called.
+   - `prior_context`: a brief summary of relevant predecessor results (from trajectory, if any)
+3. **Parallelize independent nodes**: if multiple nodes are ready and they work on different
+   data or use different skills, issue ALL their `run_node_executor` calls in a SINGLE response
+   turn so the ADK runtime executes them concurrently. Wait for all results before proceeding.
+4. After each `run_node_executor` result:
+   - `status == "success"`:
+       a. Call `validate_summarize` with key_results, artifacts, concise_summary.
+       b. Call `set_node_status(node_id="...", status="success", result=<concise_summary>)`.
+   - `status == "needs_replanning"`:
+       a. Call `set_node_status(node_id="...", status="failed", result=<replan_reason>)`.
+       b. Call `mark_dependents_blocked(failed_node_id="...")`.
+       c. Call `to_planner(reason=<replan_reason>)`. STOP — do not run any further nodes.
+   - `status == "cancelled"`:
+       a. Call `to_planner("execution cancelled by user")`. STOP.
+5. After handling all results from a batch, call `get_ready_nodes()` again.
+6. Continue until `get_ready_nodes()` returns count == 0. Execution is then complete.
 
 ## Rules
-- NEVER run code directly — all execution must go through `run_step_executor`.
+- NEVER execute code directly — all work goes through `run_node_executor`.
+- When a batch has both successes and one failure, process the success nodes first
+  (validate_summarize + set_node_status), then handle the failure last (set_node_status,
+  mark_dependents_blocked, to_planner).
 - Always use absolute file paths in artifact lists.
 """
 
@@ -78,18 +90,38 @@ def to_planner(reason: str, tool_context: ToolContext) -> dict:
     return {"status": "ok", "message": f"Returning to planner: {reason}"}
 
 
-def set_current_step_index(step_index: int, tool_context: ToolContext) -> dict:
-    """Update the current step index for resumption tracking.
+async def run_node_executor(
+    node_id: str,
+    action: str,
+    suggested_skills: List[str],
+    workspace_dir: str,
+    prior_context: Optional[str] = None,
+    *,
+    tool_context: ToolContext,
+) -> dict:
+    """Run a single graph node as an isolated step executor sub-agent.
 
-    Call after each successful step with that step's step_number so execution
-    can resume from the correct point if interrupted later.
+    For independent nodes, issue multiple calls in a SINGLE response turn
+    to execute them concurrently.
 
     Args:
-        step_index: The 1-based step_number that just completed successfully.
+        node_id:          The node's ID from the execution graph (e.g. 'step_relax_geometry').
+        action:           The node's action text.
+        suggested_skills: Skill names from the graph node.
+        workspace_dir:    Absolute path to the session workspace.
+        prior_context:    Brief summary of predecessor results for context.
     """
-    tool_context.state["current_step_index"] = step_index
-    logger.debug("[execution_orchestrator] current_step_index → %d", step_index)
-    return {"status": "ok", "current_step_index": step_index}
+    counter = tool_context.state.get("_node_exec_counter", 0) + 1
+    tool_context.state["_node_exec_counter"] = counter
+    return await run_step_executor(
+        step_number=counter,
+        action=action,
+        suggested_skills=suggested_skills,
+        workspace_dir=workspace_dir,
+        prior_context=prior_context,
+        node_id=node_id,
+        tool_context=tool_context,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -103,17 +135,16 @@ def _exec_before_agent_callback(callback_context: CallbackContext) -> None:
 
     for key, default in [
         ("goal", None),
-        ("plan", None),
-        ("current_step_index", 0),
+        ("execution_graph", None),
         ("summarize", None),
         ("trajectory_step", 0),
         ("return_to_planner", False),
         ("return_to_planner_reason", None),
+        ("_node_exec_counter", 0),
     ]:
         if key not in state:
             state[key] = default
 
-    # Workspace directory (session_id is set by PlanningExecutionOrchestrator on first run)
     session_id = state.get("session_id", "default")
     state["workspace_dir"] = str(get_session_workdir(session_id))
 
@@ -131,15 +162,17 @@ execution_agent = LlmAgent(
     ),
     include_contents="none",
     description=(
-        "Orchestrates execution of all plan steps by spawning isolated step_executor sub-agents. "
-        "Handles step sequencing, optional parallelism, and error escalation to the planner."
+        "Orchestrates execution of a DAG-based plan by spawning isolated step_executor sub-agents. "
+        "Handles parallel node dispatch, status tracking, and error escalation to the planner."
     ),
     instruction=_EXECUTION_ORCHESTRATOR_INSTRUCTION,
     tools=[
-        FunctionTool(run_step_executor),
+        FunctionTool(run_node_executor),
         FunctionTool(to_planner),
         FunctionTool(validate_summarize),
-        FunctionTool(set_current_step_index),
+        FunctionTool(get_ready_nodes),
+        FunctionTool(set_node_status),
+        FunctionTool(mark_dependents_blocked),
     ],
     before_agent_callback=_exec_before_agent_callback,
 )

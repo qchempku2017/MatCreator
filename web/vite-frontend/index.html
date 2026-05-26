@@ -136,6 +136,7 @@
               <h2>Orchestration Chat</h2>
             </div>
             <div style="display:flex;align-items:center;gap:8px;">
+              <button class="ghost" id="plan-graph-toggle" title="Toggle execution plan graph" style="font-size:11px;padding:4px 8px;">Plan Graph</button>
               <div id="avatar-upload-btn" class="message-avatar user-avatar avatar-upload-btn" title="Upload your avatar" style="cursor:pointer;"></div>
               <input type="file" id="avatar-upload-input" accept="image/*" style="display:none">
             </div>
@@ -166,6 +167,16 @@
               <textarea class="text-input" id="text-input" placeholder="Ask for a plan, run, or assessment…" rows="1"></textarea>
               <button class="send-btn" id="send-btn" title="Send">➜</button>
             </div>
+          </div>
+
+          <!-- Floating execution plan graph popup -->
+          <div class="plan-graph-popup hidden" id="plan-graph-popup">
+            <div class="plan-graph-popup-header">
+              <span class="plan-graph-popup-title">Execution Plan</span>
+              <span class="graph-status status-idle" id="plan-graph-status">idle</span>
+              <button class="ghost plan-graph-close-btn" id="plan-graph-close" title="Close">✕</button>
+            </div>
+            <div id="plan-graph-canvas" class="plan-graph-canvas"></div>
           </div>
         </section>
 
