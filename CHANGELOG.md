@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.7.3 (2026-05-27)
+
+### Bug Fixes
+
+- Add get_related_skills to execution agent
+  ([`b82e445`](https://github.com/nlz25/PFD_Agent/commit/b82e445bdc63d87d948a71fd7b206383850798e1))
+
+
 ## v1.7.2 (2026-05-27)
 
 ### Bug Fixes
