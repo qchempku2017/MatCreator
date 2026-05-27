@@ -2,6 +2,17 @@
 
 <!-- version list -->
 
+## v1.7.1 (2026-05-27)
+
+### Bug Fixes
+
+- Issues the project root solving logic
+  ([`1e3d3f1`](https://github.com/nlz25/PFD_Agent/commit/1e3d3f1f9c0871b1f9f3364b4528353f9107aaf0))
+
+- Update src/matcreator/scripts/start_agent.py
+  ([`4cf235b`](https://github.com/nlz25/PFD_Agent/commit/4cf235b22ddae94da085daecb241e634cc066d67))
+
+
 ## v1.7.0 (2026-05-26)
 
 ### Bug Fixes
