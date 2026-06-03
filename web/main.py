@@ -151,6 +151,11 @@ def _available_upload_path(upload_dir: Path, filename: str) -> Path:
     raise HTTPException(status_code=409, detail="Too many files with the same name")
 
 
+@app.get("/api/health")
+async def health_check():
+    return {"status": "ok"}
+
+
 @app.get("/api/session-access/{user_id}")
 async def get_session_access(user_id: str) -> JSONResponse:
     return JSONResponse({"user_id": user_id, "is_admin": _is_admin(user_id)})
