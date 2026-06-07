@@ -11,109 +11,61 @@ This file covers only **VASP-specific** parameters.
 
 All other Bohrium parameters (`BOHRIUM_PROJECT_ID`, machine type) are general and not VASP-specific.
 
+* Check `BOHRIUM_VASP_IMAGE` and `BOHRIUM_PROJECT_ID` in environment.
+
 ## VASP run command
 
 ```bash
 source /opt/intel/oneapi/setvars.sh && mpirun -np <N_CORES> vasp_std > log 2> err
 ```
 
-Match `N_CORES` to the machine's core count (e.g. 32 for `c32_m128_cpu`).
+Always match the `<N_CORES>` count to the machine's core count.
 
-## VASP input/output files
 
-| Calc type | Upload to `/input/` | Download from `/input/` |
-|---|---|---|
-| relaxation | POSCAR, INCAR, POTCAR, KPOINTS | CONTCAR, OUTCAR, vasprun.xml, OSZICAR, log, err |
-| scf (nsoc) | POSCAR, INCAR, POTCAR, KPOINTS | CONTCAR, OUTCAR, vasprun.xml, CHGCAR, OSZICAR, log, err |
-| scf (soc) | POSCAR, INCAR, POTCAR, KPOINTS | CONTCAR, OUTCAR, vasprun.xml, CHGCAR, WAVECAR, OSZICAR, log, err |
-| nscf | POSCAR, INCAR, POTCAR, KPOINTS, CHGCAR [, WAVECAR] | OUTCAR, vasprun.xml, OSZICAR, log, err |
+
+## Choosing CPU machines
+
+You can check available machine type using `bohr` CLI
+
+Choose based on system size:
+- **Small systems (a few atoms)**: `c16_m32_cpu` is efficient — good balance of cores and memory
+- **Medium systems (10-50 atoms)**: `c32_m64_cpu` for better parallelization
+- **Large systems or k-point-heavy calculations**: `c32_m64_cpu` or larger if available
+
+
+In most cases, set `NCORES` in the INCAR to 4 - approx SQRT(number of cores) for optimal performance.
+
 
 ## Single job workflow
-
+Submit — return a Job ID
 ```bash
-# 1. Submit — capture job ID
-JOB_ID=$(bohr job submit \
+bohr job submit \
   --project_id "$BOHRIUM_PROJECT_ID" \
-  --name "vasp-relax-Al" \
-  --machine_type "c32_m128_cpu" \
-  --image "$BOHRIUM_VASP_IMAGE" \
-  --disk_size 50 \
-  --command "cd /input && source /opt/intel/oneapi/setvars.sh && mpirun -np 32 vasp_std" \
-  | grep -oP '(?<="job_id":)\s*\d+' | tr -d ' ')
-
-# 2. Upload input files
-bohr job upload --job_id "$JOB_ID" --local_path <calc_dir>/ --remote_path /input/
-
-# 3. Monitor (streams log until done)
-bohr job log --job_id "$JOB_ID" --follow
-
-# 4. Download results
-bohr job download --job_id "$JOB_ID" --remote_path /input/ --local_path <calc_dir>/
+  --job_name "vasp-relax-Al" \
+  --machine_type "c32_m64_cpu" \
+  --image_address "$BOHRIUM_VASP_IMAGE" \
+  --input_directory "./vasp-relax-Al-example" \ 
+  --command "source /opt/intel/oneapi/setvars.sh && mpirun -np 32 vasp_std" 
 ```
 
-## Batch submission (calc_dir_list)
-
-Submit one job per `calc_dir`, record all job IDs, then poll for completion.
-
+Monitor (Download log files for Job IDs )
 ```bash
-JOB_IDS=()
-
-for CALC_DIR in <calc_dir_1> <calc_dir_2> ...; do
-  NAME="vasp-$(basename $CALC_DIR)"
-  JOB_ID=$(bohr job submit \
-    --project_id "$BOHRIUM_PROJECT_ID" \
-    --name "$NAME" \
-    --machine_type "c32_m128_cpu" \
-    --image "$BOHRIUM_VASP_IMAGE" \
-    --disk_size 50 \
-    --command "cd /input && source /opt/intel/oneapi/setvars.sh && mpirun -np 32 vasp_std > log 2> err" \
-    | grep -oP '(?<="job_id":)\s*\d+' | tr -d ' ')
-  bohr job upload --job_id "$JOB_ID" --local_path "$CALC_DIR"/ --remote_path /input/
-  JOB_IDS+=("$JOB_ID:$CALC_DIR")
-  echo "Submitted $NAME → job $JOB_ID"
-done
-
-# Poll until all done
-while true; do
-  ALL_DONE=true
-  for ENTRY in "${JOB_IDS[@]}"; do
-    JOB_ID="${ENTRY%%:*}"
-    STATUS=$(timeout 60 bohr job status --job_id "$JOB_ID" 2>/dev/null | tr -d ' \n')
-    [[ "$STATUS" != "finished" && "$STATUS" != "failed" && "$STATUS" != "cancelled" ]] && ALL_DONE=false
-    echo "  job $JOB_ID: $STATUS"
-  done
-  $ALL_DONE && break
-  sleep 120
-done
-
-# Download results for all completed jobs
-for ENTRY in "${JOB_IDS[@]}"; do
-  JOB_ID="${ENTRY%%:*}"
-  CALC_DIR="${ENTRY#*:}"
-  STATUS=$(timeout 60 bohr job status --job_id "$JOB_ID" 2>/dev/null | tr -d ' \n')
-  if [[ "$STATUS" == "finished" ]]; then
-    bohr job download --job_id "$JOB_ID" --remote_path /input/ --local_path "$CALC_DIR"/
-    echo "Downloaded results for job $JOB_ID → $CALC_DIR"
-  else
-    echo "WARNING: job $JOB_ID ended with status $STATUS — check logs: bohr job log --job_id $JOB_ID"
-  fi
-done
+bohr job log --job_id "$JOB_ID"
 ```
+
+Download results
+```
+bohr job download -j 1234 -j 2345 -o /opt
+# Download the out files for Job IDs 1234 and 2345 and save them to the local /opt directory
+```
+
+## Bathc job workflow
+Create a job group, and then submit jobs to that group. See the `bohrium` skill for more details.
 
 ## Handling failed jobs
-
+Check job log with:  
 ```bash
 # Inspect logs
-bohr job log --job_id <JOB_ID> --tail 50
-
-# Resubmit a failed job (same calc_dir, new job ID)
-JOB_ID=$(bohr job submit \
-  --project_id "$BOHRIUM_PROJECT_ID" \
-  --name "vasp-retry-<name>" \
-  --machine_type "c32_m128_cpu" \
-  --image "$BOHRIUM_VASP_IMAGE" \
-  --disk_size 50 \
-  --command "cd /input && source /opt/intel/oneapi/setvars.sh && mpirun -np 32 vasp_std > log 2> err" \
-  | grep -oP '(?<="job_id":)\s*\d+' | tr -d ' ')
-bohr job upload --job_id "$JOB_ID" --local_path <calc_dir>/ --remote_path /input/
+bohr job log --job_id <JOB_ID> 
 ```
+Modify the setting, then simply submit again. 

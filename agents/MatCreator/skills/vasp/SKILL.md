@@ -7,6 +7,7 @@ metadata:
     - run_skill_script
     - load_skill_resource
   dependent_skills:
+    - bohrium
     - dpdisp
   tags:
     - vasp
