@@ -1,55 +1,44 @@
-# Read results — Python snippet
+# Reading VASP Results
 
-Parse a completed calculation directory. Set `CALC_TYPE` to match the job that was run.
+Load `vasprun.xml` with `pymatgen` `Vasprun` and access results as attributes.
+
+## Load
 
 ```python
-import json
-from pathlib import Path
 from pymatgen.io.vasp.outputs import Vasprun
 
-# ── inputs ──────────────────────────────────────────────────────────
-CALC_TYPE = "<relaxation|scf|nscf>"
-CALC_DIR  = "<calc_dir>"
+vr = Vasprun("calc_dir/vasprun.xml")
+```
 
-# ── execution ────────────────────────────────────────────────────────
-d  = Path(CALC_DIR)
-vr = Vasprun(str(d / "vasprun.xml"), parse_dos=False, parse_eigen=(CALC_TYPE == "nscf"))
-result = {"status": "success", "calc_type": CALC_TYPE}
+For band structure jobs, enable eigenvalue parsing:
+```python
+vr = Vasprun("nscf_job/vasprun.xml", parse_eigen=True)
+```
 
-if CALC_TYPE == "relaxation":
-    forces = vr.ionic_steps[-1]["forces"]
-    result.update({
-        "structure":    vr.final_structure.as_dict(),
-        "total_energy": vr.final_energy,
-        "max_force":    max(sum(f**2 for f in force)**0.5 for force in forces),
-        "stress":       vr.ionic_steps[-1].get("stress"),
-        "ionic_steps":  len(vr.ionic_steps),
-    })
-elif CALC_TYPE == "scf":
-    gap, cbm, vbm, is_metal = vr.eigenvalue_band_properties
-    result.update({
-        "structure":    vr.final_structure.as_dict(),
-        "total_energy": vr.final_energy,
-        "efermi":       vr.efermi,
-        "band_gap":     gap,
-        "is_metal":     is_metal,
-    })
-elif CALC_TYPE == "nscf":
-    bs = vr.get_band_structure(line_mode=True)
-    gap, cbm, vbm, is_metal = vr.eigenvalue_band_properties
-    result.update({
-        "structure": vr.final_structure.as_dict(),
-        "efermi":    vr.efermi,
-        "band_gap":  gap,
-        "cbm":       cbm,
-        "vbm":       vbm,
-        "is_metal":  is_metal,
-        "band_structure_summary": {
-            "n_kpoints": len(bs.kpoints),
-            "n_bands":   bs.nb_bands,
-            "labels":    {str(k): list(v) for k, v in bs.labels_dict.items()},
-        },
-    })
+## Key attributes by calculation type
 
-print(json.dumps(result))
+**Relaxation**
+```python
+vr.final_structure          # relaxed pymatgen Structure
+vr.final_energy             # total energy (eV)
+vr.ionic_steps[-1]["forces"]   # forces on last step (eV/Å)
+vr.ionic_steps[-1]["stress"]   # stress tensor (kBar)
+len(vr.ionic_steps)         # number of ionic steps taken
+```
+
+**SCF**
+```python
+vr.final_energy             # total energy (eV)
+vr.efermi                   # Fermi energy (eV)
+gap, cbm, vbm, is_metal = vr.eigenvalue_band_properties
+```
+
+**NSCF (band structure)**
+```python
+vr.efermi
+gap, cbm, vbm, is_metal = vr.eigenvalue_band_properties
+bs = vr.get_band_structure(line_mode=True)
+bs.kpoints                  # list of k-points
+bs.nb_bands                 # number of bands
+bs.labels_dict              # high-symmetry point labels
 ```

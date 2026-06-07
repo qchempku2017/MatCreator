@@ -65,30 +65,20 @@ load_skill_resource(skill_name="vasp-pymatgen", path="references/nscf-uniform.md
 ```
 
 ### read_results
-Parse `vasprun.xml` via `Vasprun`. Set `CALC_TYPE` to `relaxation`, `scf`, or `nscf`. Returns energy, forces, band gap, efermi, and (for nscf) band structure summary.
+Parse `vasprun.xml` via `Vasprun`. Returns energy, forces, band gap, efermi, and (for nscf) band structure summary, etc.
 ```
 load_skill_resource(skill_name="vasp-pymatgen", path="references/read-results.md")
-```
-
-### collect_results
-Parse multiple calc dirs and write a single extxyz file via ASE. Returns path to the output file.
-```
-load_skill_resource(skill_name="vasp-pymatgen", path="references/collect-results.md")
 ```
 
 ---
 
 ## Submission
 
-Submit using the `bohrium` skill. For the full submission template and environment variables:
-```
-load_skill_resource(skill_name="vasp", path="references/bohr.md")
-```
-
 ### `bohrium` skill (Recommended for Bohrium users)
 Submit jobs to Bohrium using the `bohrium` skill, which wraps the `bohr` CLI. This is the recommended submission method for users running on the Bohrium platform.
 
 For the full submission template and environment variables for VASP job on bohrium, see:
+
 ```
 load_skill_resource(skill_name="vasp-pymatgen", path="references/bohr.md")
 ```

@@ -1,42 +1,50 @@
-# Relaxation — Python snippet
+# Relaxation Input Generation
 
+Generate VASP geometry relaxation input files using `pymatgen` `MPRelaxSet`.
+
+## Steps
+
+**1. Create a job directory**
+```bash
+mkdir -p relax_job
+```
+
+**2. Load the structure and generate inputs**
 ```python
-import json, os
-from datetime import datetime
-from pathlib import Path
-
-from ase.io import read as ase_read
+from pymatgen.core import Structure
 from pymatgen.io.ase import AseAtomsAdaptor
 from pymatgen.io.vasp.sets import MPRelaxSet
+from ase.io import read as ase_read
 
-def _work_dir(tag: str) -> Path:
-    base = Path(os.environ.get("MATCLAW_SESSION_DIR", ".")) / "vasp"
-    d = base / f"{tag}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+# From any structure file (cif, extxyz, vasp, ...):
+atoms = ase_read("structure.extxyz")
+structure = AseAtomsAdaptor.get_structure(atoms)
 
-# ── inputs ──────────────────────────────────────────────────────────
-STRUCTURE_FILE = "<path.extxyz|path.vasp>"
-FRAMES         = None   # list of int indices, or None for all (extxyz only)
-USER_INCAR     = {
-    "NCORE": 4,
+user_incar = {
+    "NCORE": 4,   # ≈ sqrt(number of cores)
     # "ENCUT": 600,
 }
 
-# ── execution ────────────────────────────────────────────────────────
-atoms_list = ase_read(STRUCTURE_FILE, index=":" if FRAMES is None else FRAMES)
-if not isinstance(atoms_list, list):
-    atoms_list = [atoms_list]
-
-calc_dirs = []
-for atoms in atoms_list:
-    structure = AseAtomsAdaptor.get_structure(atoms)
-    vis = MPRelaxSet(structure, user_incar_settings=USER_INCAR)
-    d = _work_dir("relax")
-    vis.write_input(str(d))
-    calc_dirs.append(str(d.resolve()))
-
-print(json.dumps({"status": "success", "calc_dir_list": calc_dirs}))
+vis = MPRelaxSet(structure, user_incar_settings=user_incar)
+vis.write_input("relax_job/")
 ```
 
-**MPRelaxSet key defaults:** IBRION=2, ISIF=3, NSW=99, ISMEAR=0, SIGMA=0.05, LWAVE=False, LCHARG=False. k-points: `reciprocal_density=64`.
+This writes `INCAR`, `POSCAR`, `KPOINTS`, and `POTCAR` into the job directory.
+
+## Key MPRelaxSet defaults
+
+| Tag | Value | Notes |
+|-----|-------|-------|
+| IBRION | 2 | RMM-DIIS ionic relaxation |
+| ISIF | 3 | Relax ions + cell shape + volume |
+| NSW | 99 | Max ionic steps |
+| ISMEAR | 0 | Gaussian smearing |
+| SIGMA | 0.05 | Smearing width (eV) |
+| LWAVE | False | Do not write WAVECAR |
+| LCHARG | False | Do not write CHGCAR |
+| k-points | `reciprocal_density=64` | Γ-centered MP mesh |
+
+## Notes
+
+- Include `CONTCAR` and `OUTCAR` in `backward_files` to retrieve the relaxed structure
+- NCORE ≈ √(cores): 8 cores → 3, 16 cores → 4, 32 cores → 6
