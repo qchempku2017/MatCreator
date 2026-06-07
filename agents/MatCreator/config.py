@@ -40,4 +40,7 @@ def get_planning_skills() -> list[str]:
 
 def get_disabled_skills() -> list[str]:
     """Return the list of skill names disabled for knowledge graph search."""
-    return load_config().get("skills", {}).get("disabled", [])
+    raw = load_config().get("skills", {}).get("disabled", [])
+    if not isinstance(raw, list):
+        return []
+    return [s.strip() for s in raw if isinstance(s, str) and s.strip()]
