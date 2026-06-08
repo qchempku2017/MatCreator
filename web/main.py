@@ -670,12 +670,17 @@ async def create_custom_skill(
 @app.delete("/api/skills/custom/{skill_name}")
 async def delete_custom_skill(skill_name: str) -> JSONResponse:
     """Delete a custom workspace skill. Default skills cannot be deleted."""
+    if not _SKILL_NAME_RE.match(skill_name):
+        raise HTTPException(status_code=400, detail=f"Invalid skill name: '{skill_name}'.")
     if skill_name in get_default_skill_names():
         raise HTTPException(
             status_code=400,
             detail=f"'{skill_name}' is a built-in default skill and cannot be deleted.",
         )
-    skill_dir = workspace_skills_dir() / skill_name
+    root = workspace_skills_dir()
+    skill_dir = root / skill_name
+    if skill_dir.resolve() == root.resolve() or not skill_dir.resolve().is_relative_to(root.resolve()):
+        raise HTTPException(status_code=400, detail="Invalid skill path.")
     if not skill_dir.exists():
         raise HTTPException(status_code=404, detail=f"Custom skill '{skill_name}' not found in workspace.")
     try:
