@@ -109,6 +109,13 @@ class KnowledgeGraph:
                 select(KgNode).where(KgNode.category == category, KgNode.name == name)
             ).scalars().first()
             if existing:
+                # Update description if it changed (e.g. SKILL.md was edited)
+                if description and existing.description != description:
+                    existing.description = description
+                    existing.updated_at = datetime.now(timezone.utc)
+                    sess.commit()
+                    sess.refresh(existing)
+                sess.expunge(existing)
                 return existing
 
             # Fuzzy dedup among same-category nodes
