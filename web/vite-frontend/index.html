@@ -301,11 +301,11 @@
             <input id="settings-uuid" class="text-input" readonly style="width:100%;box-sizing:border-box;font-family:monospace;font-size:0.8rem;opacity:0.7;cursor:text" />
             <div style="margin-top:20px;border-top:1px solid #ffffff18;padding-top:16px">
               <label class="settings-label">Change Password</label>
-              <input type="password" id="settings-current-password" class="text-input" placeholder="Current password (leave blank if none)" style="width:100%;box-sizing:border-box;margin-top:6px" />
-              <input type="password" id="settings-new-password" class="text-input" placeholder="New password" style="width:100%;box-sizing:border-box;margin-top:6px" />
-              <input type="password" id="settings-confirm-password" class="text-input" placeholder="Confirm new password" style="width:100%;box-sizing:border-box;margin-top:6px" />
+              <input type="password" id="settings-current-password" class="text-input" aria-label="Current password" placeholder="Current password (leave blank if none)" style="width:100%;box-sizing:border-box;margin-top:6px" />
+              <input type="password" id="settings-new-password" class="text-input" aria-label="New password" placeholder="New password" style="width:100%;box-sizing:border-box;margin-top:6px" />
+              <input type="password" id="settings-confirm-password" class="text-input" aria-label="Confirm new password" placeholder="Confirm new password" style="width:100%;box-sizing:border-box;margin-top:6px" />
               <button id="settings-save-password-btn" class="ghost" style="margin-top:8px;width:100%;justify-content:center">Save Password</button>
-              <span id="settings-password-msg" style="display:block;margin-top:6px;font-size:0.8rem;min-height:1.2em"></span>
+              <span id="settings-password-msg" role="status" style="display:block;margin-top:6px;font-size:0.8rem;min-height:1.2em"></span>
             </div>
             <button id="settings-logout-btn" class="ghost" style="margin-top:16px;width:100%;justify-content:center;color:#f87171;border:1px solid #f8717144">Log out</button>
           </div>

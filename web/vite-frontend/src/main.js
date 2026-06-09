@@ -463,8 +463,8 @@ class AgentGraphView {
     try {
       const resp = await fetch(`/api/agent-graph/${sessionId}`);
       if (!resp.ok) return;
-      if (sessionId !== this._currentSessionId) return;
       const data = await resp.json();
+      if (sessionId !== this._currentSessionId) return;
       this.update(data);
     } catch (_) {
       // silently ignore network errors during polling
@@ -802,8 +802,8 @@ class ExecutionPlanView {
     try {
       const resp = await fetch(`/api/execution-graph/${sessionId}`);
       if (!resp.ok) return;
-      if (sessionId !== this._currentSessionId) return;
       const data = await resp.json();
+      if (sessionId !== this._currentSessionId) return;
       this.update(data);
     } catch (_) {}
   }
