@@ -109,6 +109,14 @@ class KnowledgeGraph:
                 select(KgNode).where(KgNode.category == category, KgNode.name == name)
             ).scalars().first()
             if existing:
+                # Update description if it changed (e.g. SKILL.md was edited)
+                if description and existing.description != description:
+                    existing.description = description
+                    existing.embedding = None
+                    existing.updated_at = datetime.now(timezone.utc)
+                    sess.commit()
+                    sess.refresh(existing)
+                sess.expunge(existing)
                 return existing
 
             # Fuzzy dedup among same-category nodes
@@ -121,6 +129,7 @@ class KnowledgeGraph:
                     # Immutable nodes are returned unchanged
                     if not c.immutable and description and (not c.description or len(description) > len(c.description)):
                         c.description = description
+                        c.embedding = None
                         c.updated_at = datetime.now(timezone.utc)
                         sess.commit()
                     sess.expunge(c)

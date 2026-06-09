@@ -219,10 +219,30 @@ async def run_flash_step(
 
 
 # ---------------------------------------------------------------------------
-# Instruction
+# Instructions
 # ---------------------------------------------------------------------------
 
-_MATCREATOR_INSTRUCTION = """
+_FLASH_INSTRUCTION = """
+You are MatCreator, an AI assistant for computational materials science.
+**Flash mode**: act as a direct, conversational assistant.
+
+## Context
+- Goal: {goal}
+
+## How to work
+- Call `run_flash_step` for computation, or skill execution.
+  Multiple independent calls in one response turn run concurrently.
+- Call `search_skills` / `load_skill` to discover or load a skill.
+- Use `query_knowledge_graph` to retrieve relevant past knowledge.
+- After completing work, call `save_to_knowledge_graph` to persist key findings.
+
+## Rules
+- Be concise and responsive.
+- Do NOT call `validate_graph`, `confirm_plan_and_start_execution`, or `request_skill_testing`.
+- Quote exact error messages and propose concrete solutions when something fails.
+"""
+
+_NORMAL_INSTRUCTION = """
 You are MatCreator, an AI assistant for computational materials science workflows.
 Your role here is **PLANNING ONLY**: you are responsible only for planning; all concrete execution steps must be delegated to the execution agent.
 
@@ -243,9 +263,7 @@ Your role here is **PLANNING ONLY**: you are responsible only for planning; all 
 {confirmation_instruction}
 4. If the user asks to create or test a skill, call `request_skill_testing(description)`.
 5. After completing a node, use `save_to_knowledge_graph` to persist key lessons or findings.
-6. Once execution has fully completed and results are available, call `write_session_summary`
-   with the global narrative: original goal, approach rationale, key decisions, lessons
-   learned, any failed attempts, and the overall outcome.
+6. Once execution has fully completed, call `write_session_summary` with the global narrative.
 
 ## DAG Planning Guidelines
 - **Node IDs**: use descriptive snake_case prefixed with `step_`, e.g. `step_download_data`.
@@ -290,6 +308,8 @@ Your role here is **PLANNING ONLY**: you are responsible only for planning; all 
 - Use this information when replanning: avoid re-running nodes that already succeeded.
 """
 
+_MATCREATOR_INSTRUCTION = "{instruction_body}"
+
 # ---------------------------------------------------------------------------
 # before_agent_callback: inject dynamic context into session state
 # ---------------------------------------------------------------------------
@@ -308,22 +328,25 @@ def before_agent_callback(callback_context: CallbackContext) -> None:
 
     agent_mode = _get_agent_mode(state)
     if agent_mode == "flash":
-        callback_context.state["confirmation_instruction"] = (
-            "4. **Flash mode is active.** You have direct execution capability.\n"
-            "   - Call `run_flash_step` whenever computation, scripts, or skills are needed "
-            "— no DAG, no plan, no user approval required.\n"
-            "   - Be conversational and responsive. You are NOT required to build a plan.\n"
-            "   - Do NOT call `confirm_plan_and_start_execution` or `request_skill_testing`."
-        )
-    elif agent_mode == "bench":
-        callback_context.state["confirmation_instruction"] = (
-            "4. **Benchmark mode is active.** Immediately call `confirm_plan_and_start_execution` "
-            "after `validate_graph` succeeds — do NOT wait for user confirmation."
+        callback_context.state["instruction_body"] = _FLASH_INSTRUCTION.format(
+            goal=state.get("goal") or "Not set",
         )
     else:
-        callback_context.state["confirmation_instruction"] = (
-            '4. **Wait for explicit user confirmation** (e.g. "yes", "ok", "proceed") before proceeding.\n'
-            "   When the user confirms, call `confirm_plan_and_start_execution` — do NOT execute nodes yourself."
+        if agent_mode == "bench":
+            confirmation_instruction = (
+                "3. **Benchmark mode is active.** Immediately call `confirm_plan_and_start_execution` "
+                "after `validate_graph` succeeds — do NOT wait for user confirmation."
+            )
+        else:
+            confirmation_instruction = (
+                '3. **Wait for explicit user confirmation** (e.g. "yes", "ok", "proceed") before proceeding.\n'
+                "   When the user confirms, call `confirm_plan_and_start_execution` — do NOT execute nodes yourself."
+            )
+        callback_context.state["instruction_body"] = _NORMAL_INSTRUCTION.format(
+            goal=state.get("goal") or "Not set",
+            execution_graph=state.get("execution_graph"),
+            summarize=state.get("summarize"),
+            confirmation_instruction=confirmation_instruction,
         )
 
     return None
