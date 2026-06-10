@@ -8,9 +8,11 @@ import os
 from pathlib import Path
 from typing import Any
 
+from know_do_graph import EdgeRelation
+
 from ..workspace import WORKSPACE_ROOT
-from .graph_store import KnowledgeGraph  # noqa: F401 (kept for type hints)
-from .query import _get_memory_kg
+from .kdg_memory import add_memory, connect_once
+from .query import _get_kg
 
 logger = logging.getLogger(__name__)
 
@@ -52,9 +54,9 @@ def _call_llm(prompt: str) -> str:
     """Call the configured LLM. Falls back gracefully if unavailable."""
     try:
         from litellm import completion
-        from ..constants import LLM_MODEL, LLM_API_KEY, LLM_BASE_URL
+        from ..constants import GRAPH_AGENT_MODEL, LLM_API_KEY, LLM_BASE_URL
 
-        model = os.environ.get("LLM_MODEL", LLM_MODEL)
+        model = os.environ.get("GRAPH_AGENT_MODEL", GRAPH_AGENT_MODEL)
         api_key = os.environ.get("LLM_API_KEY", LLM_API_KEY)
         base_url = os.environ.get("LLM_BASE_URL", LLM_BASE_URL)
 
@@ -171,62 +173,82 @@ def run_knowledge_extractor(session_id: str) -> dict:
             "edges_created": 0,
         }
 
-    kg = _get_memory_kg()
-    node_map: dict[str, str] = {}  # name → node id
+    kg = _get_kg()
     nodes_created = 0
     edges_created = 0
-    new_nodes: list = []  # collect newly inserted nodes for batch embedding
+    memory_ids: dict[str, str] = {}
+    skill_ids: dict[str, str] = {}
 
-    # First pass: upsert all nodes as memory category
+    # Session findings stay in writable MemGraph until repeated evidence is
+    # distilled by the synthesizer into durable Know-Do entries.
     for entry in entries:
         nname = entry.get("name", "").strip()
         ndesc = entry.get("description", "")
         if not nname:
             continue
-        node = kg.upsert_node(
-            category="memory",
-            name=nname,
-            description=ndesc,
-            source_session=session_id,
-        )
-        if node.source_session == session_id:
-            nodes_created += 1
-            if node.embedding is None:
-                new_nodes.append(node)
-        node_map[nname] = node.id
-
-    # Batch-compute embeddings for newly inserted nodes
-    if new_nodes:
-        try:
-            from .query import _embed_texts, _node_text
-            texts = [_node_text(n.name, n.description or "") for n in new_nodes]
-            vecs = _embed_texts(texts)
-            if vecs:
-                for node, vec in zip(new_nodes, vecs):
-                    kg.set_embedding(node.id, vec)
-        except Exception as emb_exc:
-            logger.warning("Embedding computation failed in extractor: %s", emb_exc)
-
-    # Second pass: upsert edges
-    for entry in entries:
+        related_ids: list[str] = []
         for rel in entry.get("relations", []):
-            src_name = rel.get("source_name", "")
-            tgt_name = rel.get("target_name", "")
-            etype    = rel.get("edge_type", "")
-            if src_name in node_map and tgt_name in node_map:
-                kg.upsert_edge(
-                    source_id=node_map[src_name],
-                    target_id=node_map[tgt_name],
-                    edge_type=etype,
+            for name in (rel.get("source_name", ""), rel.get("target_name", "")):
+                matches = kg.search(
+                    name,
+                    tags=["matcreator-skill"],
+                    limit=1,
+                    mode="keyword",
                 )
+                durable = matches[0] if matches else None
+                if durable and "matcreator-skill" in durable.tags:
+                    related_ids.append(durable.id)
+                    skill_ids[name] = durable.id
+        memory = add_memory(
+            kg,
+            session_id,
+            f"{nname}: {ndesc}" if ndesc else nname,
+            tags=["extracted", "successful-execution"],
+            source_entry_ids=related_ids,
+            success=True,
+        )
+        memory_ids[nname] = memory.id
+        nodes_created += 1
+
+    for entry in entries:
+        for relation in entry.get("relations", []):
+            source_name = relation.get("source_name", "")
+            target_name = relation.get("target_name", "")
+            source_memory = memory_ids.get(source_name)
+            target_memory = memory_ids.get(target_name)
+            if source_memory and target_memory and connect_once(
+                kg,
+                source_memory,
+                target_memory,
+                relation=EdgeRelation.related_memory,
+                metadata={"extracted_relation": relation.get("edge_type")},
+            ):
+                edges_created += 1
+                continue
+
+            memory_id = source_memory or target_memory
+            skill_id = skill_ids.get(target_name) or skill_ids.get(source_name)
+            if memory_id and skill_id and connect_once(
+                kg,
+                memory_id,
+                skill_id,
+                relation=EdgeRelation.memory_of,
+                metadata={"extracted_relation": relation.get("edge_type")},
+            ):
                 edges_created += 1
 
     logger.info(
-        "Extractor session=%s: %d nodes, %d edges", session_id, nodes_created, edges_created
+        "Extractor session=%s: %d memory entries, %d edges",
+        session_id,
+        nodes_created,
+        edges_created,
     )
     return {
         "status": "ok",
         "nodes_created": nodes_created,
         "edges_created": edges_created,
-        "message": f"Extracted {nodes_created} nodes and {edges_created} edges from session {session_id}.",
+        "message": (
+            f"Extracted {nodes_created} working-memory nodes and "
+            f"{edges_created} edges from session {session_id}."
+        ),
     }
