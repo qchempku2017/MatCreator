@@ -1423,7 +1423,22 @@ function renderSessionList(sessions) {
       const isActive = s.id === state.sessionId && owner === state.activeSessionUserId;
       li.className = "session-item" + (isActive ? " active" : "");
       li.dataset.owner = owner;
-      li.textContent = state.isAdmin ? `${owner} / ${s.id}` : s.id;
+
+      const content = document.createElement("div");
+      content.className = "session-item-content";
+      content.textContent = state.isAdmin ? `${owner} / ${s.id}` : s.id;
+      li.appendChild(content);
+
+      const delBtn = document.createElement("button");
+      delBtn.className = "session-item-delete";
+      delBtn.textContent = "×";
+      delBtn.title = "Delete session";
+      delBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        deleteSession(s.id);
+      });
+      li.appendChild(delBtn);
+
       li.title = state.isAdmin ? `${owner} / ${s.id}` : s.id;
       li.addEventListener("click", () => switchSession(s.id, owner));
       sessionListEl.appendChild(li);
@@ -1445,6 +1460,73 @@ async function switchSession(sessionId, owner = state.userId) {
   await loadSessions();
   agentGraph.startPolling(sessionId);
   planGraph.startPolling(sessionId);
+}
+
+// ---------------------------------------------------------------------------
+// Confirm dialog & session delete
+// ---------------------------------------------------------------------------
+
+function showConfirmDialog(message) {
+  const existing = document.querySelector(".confirm-overlay");
+  if (existing) existing.remove();
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (result) => { if (settled) return; settled = true; overlay.remove(); resolve(result); };
+
+    const overlay = document.createElement("div");
+    overlay.className = "confirm-overlay";
+    const msg = document.createElement("p");
+    msg.className = "confirm-message";
+    msg.innerHTML = message;
+
+    const actions = document.createElement("div");
+    actions.className = "confirm-actions";
+    const cancelBtn = document.createElement("button");
+    cancelBtn.className = "confirm-cancel";
+    cancelBtn.textContent = "Cancel";
+    cancelBtn.onclick = () => done(false);
+    const okBtn = document.createElement("button");
+    okBtn.className = "confirm-ok";
+    okBtn.textContent = "Delete";
+    okBtn.onclick = () => done(true);
+    actions.append(cancelBtn, okBtn);
+
+    const card = document.createElement("div");
+    card.className = "confirm-card";
+    card.append(msg, actions);
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) done(false); });
+    overlay.addEventListener("keydown", (e) => { if (e.key === "Escape") done(false); });
+    okBtn.focus();
+  });
+}
+
+async function deleteSession(sessionId) {
+  if (state.isSending) return;
+  if (!await showConfirmDialog(`Delete session ${sessionId}? This cannot be undone.`)) return;
+  try {
+    const resp = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+    if (!resp.ok) return;
+    if (sessionId === state.sessionId) {
+      state.sessionId = `session-${Math.floor(Date.now() / 1000)}`;
+      state.activeSessionUserId = state.userId;
+      state.sessionReady = false;
+      localStorage.setItem("mat_sessionId", state.sessionId);
+      sessionIdEl.textContent = state.sessionId;
+      chatArea.innerHTML = "";
+      renderSessionFilesTree([]);
+      clearCurrentUploads();
+      agentGraph.reset();
+      planGraph.reset();
+      hidePlanGraph();
+    }
+    await loadSessions();
+  } catch (_) {
+    // silently ignore
+  }
 }
 
 refreshSessionsBtn.addEventListener("click", (e) => { e.stopPropagation(); loadSessions(); });

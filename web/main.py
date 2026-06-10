@@ -352,6 +352,48 @@ async def list_all_sessions(user_id: str = Query(..., description="Current signe
     return JSONResponse(_query_session_summaries())
 
 
+@app.delete("/api/sessions/{session_id}")
+async def delete_session(session_id: str) -> JSONResponse:
+    """Delete a session and all associated data."""
+    # 1. Delete from session DB (events cascade-deleted via FK)
+    if SESSION_DB_PATH.exists():
+        try:
+            with sqlite3.connect(SESSION_DB_PATH) as conn:
+                conn.execute("PRAGMA foreign_keys = ON")
+                conn.execute(
+                    "DELETE FROM sessions WHERE app_name = ? AND id = ?",
+                    (APP_NAME, session_id),
+                )
+        except sqlite3.Error as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to delete session from DB: {exc}")
+
+    # 2. Remove summary entry
+    summaries = _load_summaries()
+    if session_id in summaries:
+        del summaries[session_id]
+        _save_summaries(summaries)
+
+    # 3. Delete associated files/directories
+    workspace = get_workspace_root()
+    targets = [
+        workspace / "agent_graphs" / f"{session_id}.json",
+        workspace / "sessions" / session_id,           # recursive dir
+        workspace / "trajectories" / f"{session_id}.jsonl",
+        workspace / "trajectories" / f"{session_id}_summary.json",
+        workspace / "cancellation" / f"{session_id}.flag",
+    ]
+    for target in targets:
+        try:
+            if target.is_dir():
+                shutil.rmtree(target)
+            elif target.is_file():
+                target.unlink()
+        except OSError:
+            pass  # best-effort cleanup
+
+    return JSONResponse({"status": "ok", "deleted": session_id})
+
+
 def _load_execution_graph(session_id: str) -> dict:
     """Read execution_graph from the SQLite session state."""
     if not SESSION_DB_PATH.exists():

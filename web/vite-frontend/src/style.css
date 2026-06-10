@@ -527,19 +527,93 @@ details.panel-block:not([open]) > summary.block-header::after { transform: rotat
 
 /* ── Session list ────────────────────────────────────────── */
 .session-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   padding: 6px 10px;
   border-radius: 8px;
   cursor: pointer;
   font-size: 12px;
   font-family: monospace;
   color: var(--muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   transition: background 0.15s, color 0.15s;
 }
 .session-item:hover { background: rgba(125, 211, 252, 0.08); color: var(--text); }
 .session-item.active { background: rgba(125, 211, 252, 0.15); color: var(--accent); }
+.session-item-content {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-item-delete {
+  flex-shrink: 0;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 4px;
+  border: none;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+  border-radius: 4px;
+}
+.session-item:hover .session-item-delete { opacity: 0.5; }
+.session-item-delete:hover { opacity: 1 !important; color: #f87171; }
+.session-item-delete:focus-visible { opacity: 0.7; color: #f87171; outline: 1px solid var(--accent); }
+
+/* ── Confirm dialog ──────────────────────────────────────── */
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(6, 8, 15, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.confirm-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.5rem 2rem;
+  min-width: 280px;
+  max-width: 380px;
+}
+.confirm-message {
+  color: var(--text);
+  font-size: 14px;
+  margin: 0 0 1.2rem;
+  line-height: 1.5;
+}
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.confirm-cancel {
+  padding: 6px 16px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+}
+.confirm-cancel:hover { color: var(--text); border-color: var(--muted); }
+.confirm-ok {
+  padding: 6px 16px;
+  border-radius: 6px;
+  border: none;
+  background: #dc2626;
+  color: #fff;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+}
+.confirm-ok:hover { background: #ef4444; }
 
 .structure-view-btn {
   margin-top: 6px;
