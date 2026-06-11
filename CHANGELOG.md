@@ -2,6 +2,47 @@
 
 <!-- version list -->
 
+## v1.11.0 (2026-06-10)
+
+### Bug Fixes
+
+- **lammps**: Address review comments — move submission to references, use bohrium skill
+  ([`1b07f7a`](https://github.com/nlz25/PFD_Agent/commit/1b07f7a027507560a46f8dd6bd9bfe866ec6b4f2))
+
+### Features
+
+- **session**: Add session delete feature
+  ([`9f762ac`](https://github.com/nlz25/PFD_Agent/commit/9f762acff25df94c5c08ce811801cc541e81b6d9))
+
+
+## v1.10.0 (2026-06-09)
+
+### Bug Fixes
+
+- Issues with graph glitch and skill addition
+  ([`d5fbc2a`](https://github.com/nlz25/PFD_Agent/commit/d5fbc2a34be0a0b2c6baf363bf3e00dec82cb2cb))
+
+- Issues with user login
+  ([`d484a7d`](https://github.com/nlz25/PFD_Agent/commit/d484a7d17f923702f552a3dc263145a8dc317ce6))
+
+- Minor issues
+  ([`1421b1d`](https://github.com/nlz25/PFD_Agent/commit/1421b1d6160a2fdbd77ab2548009531ad4379b8d))
+
+- Update instructions for flash mode
+  ([`0e9f2ff`](https://github.com/nlz25/PFD_Agent/commit/0e9f2ff96fc21a1d56db993eea6f65d51e27452d))
+
+- **embedding**: Add drop_params=True to suppress UnsupportedParamsError for minimax
+  ([`09a5000`](https://github.com/nlz25/PFD_Agent/commit/09a50006d6e7005628b9e41d690d44828b398547))
+
+### Features
+
+- Add new materials modelling skill 'matcraft-kit'
+  ([`a8b1c1c`](https://github.com/nlz25/PFD_Agent/commit/a8b1c1c907a94be0c5f205be495b6f8e35c89acf))
+
+- **lammps**: Add LAMMPS skill for DeepMD-based MD simulations
+  ([`3a3d774`](https://github.com/nlz25/PFD_Agent/commit/3a3d77495e6789b751796cfcd3be1bf57f341a72))
+
+
 ## v1.9.0 (2026-06-08)
 
 ### Bug Fixes
