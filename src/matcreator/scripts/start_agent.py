@@ -24,6 +24,8 @@ Examples:
 import asyncio
 import json
 import os
+import shutil
+import subprocess
 import sys
 import time
 import uuid
@@ -143,6 +145,48 @@ def _setup_workspace(workspace: str | None) -> Path:
 
 
 
+def _run_with_env(cmd: list[str], env: dict[str, str]) -> None:
+    click.echo("Starting: " + " ".join(cmd))
+    try:
+        subprocess.run(cmd, check=True, env=env)
+    except KeyboardInterrupt:
+        pass
+    except subprocess.CalledProcessError as exc:
+        sys.exit(exc.returncode)
+
+
+def _ensure_project_imports() -> None:
+    """Add project root and agents dir to sys.path for imports."""
+    for p in (str(PROJECT_ROOT), str(PROJECT_ROOT / "agents")):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+
+
+def _resolve_kdg_cli() -> str:
+    """Resolve the know-do-graph executable from the current environment."""
+    local_bin = Path(sys.executable).resolve().with_name("know-do-graph")
+    if local_bin.is_file():
+        return str(local_bin)
+
+    found = shutil.which("know-do-graph")
+    if found:
+        return found
+
+    raise click.ClickException(
+        "Could not find the `know-do-graph` executable in the current environment."
+    )
+
+
+def _matcreator_kdg_env() -> dict[str, str]:
+    """Return an environment that pins KDG CLI calls to MatCreator's database."""
+    _ensure_project_imports()
+    from agents.MatCreator.constants import KNOW_DO_GRAPH_DB
+
+    env = os.environ.copy()
+    env["KDG_DB_PATH"] = str(KNOW_DO_GRAPH_DB)
+    return env
+
+
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
 def main():
     """MatCreator CLI — manage and run the MatCreator agent."""
@@ -184,6 +228,60 @@ def api_server(host, port, workspace, log_level, reload_agents, verbose, reload)
         reload_agents=reload_agents,
         reload=reload,
     )
+
+
+@main.group("graph", context_settings={"ignore_unknown_options": True})
+def graph_group():
+    """Run Know-Do Graph inspection commands against MatCreator's active database."""
+
+
+@graph_group.command(
+    "serve",
+    context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
+)
+@click.pass_context
+def graph_serve(ctx: click.Context) -> None:
+    """Launch the Know-Do Graph HTTP UI/server using MatCreator's active database."""
+    env = _matcreator_kdg_env()
+    cmd = [_resolve_kdg_cli(), "serve", *ctx.args]
+    _run_with_env(cmd, env)
+
+
+@graph_group.command(
+    "stats",
+    context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
+)
+@click.pass_context
+def graph_stats(ctx: click.Context) -> None:
+    """Show graph statistics using MatCreator's configured Know-Do Graph database."""
+    env = _matcreator_kdg_env()
+    cmd = [_resolve_kdg_cli(), "graph", "stats", *ctx.args]
+    _run_with_env(cmd, env)
+
+
+@graph_group.command(
+    "neighbors",
+    context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
+)
+@click.argument("entry_id")
+@click.pass_context
+def graph_neighbors(ctx: click.Context, entry_id: str) -> None:
+    """Show graph neighbors for an entry using MatCreator's active database."""
+    env = _matcreator_kdg_env()
+    cmd = [_resolve_kdg_cli(), "graph", "neighbors", entry_id, *ctx.args]
+    _run_with_env(cmd, env)
+
+
+@graph_group.command(
+    "export",
+    context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
+)
+@click.pass_context
+def graph_export(ctx: click.Context) -> None:
+    """Export graph entries using MatCreator's configured Know-Do Graph database."""
+    env = _matcreator_kdg_env()
+    cmd = [_resolve_kdg_cli(), "graph", "export", *ctx.args]
+    _run_with_env(cmd, env)
 
 
 # ---------------------------------------------------------------------------
@@ -579,7 +677,6 @@ def knowledge_distill(min_evidence, stale_days, workspace):
     """Promote repeated successful memory into durable Know-Do entries."""
     _ensure_workspace(workspace)
     from matcreator.knowledge.synthesizer import run_knowledge_synthesizer
-
     result = run_knowledge_synthesizer(
         stale_days=stale_days,
         min_insights_for_workflow=min_evidence,
