@@ -8,6 +8,7 @@ Commands:
     web         Launch the ADK web UI.
     api-server  Launch the ADK API server (used by the Streamlit app).
     run         Run the agent non-interactively on a single prompt.
+    chat        Run the agent interactively in the terminal (workspace = CWD by default).
 
 Examples:
     matcreator web
@@ -15,53 +16,92 @@ Examples:
     matcreator api-server
     matcreator run -p "Build a silicon FCC structure"
     matcreator run -f prompt.txt --output-format json -o result.json
+    matcreator chat
+    matcreator chat --workspace ~/my-project
     MATCLAW_WORKSPACE=/data/ws matcreator run -p "hello"
 """
 
 import asyncio
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
+import uuid
+import warnings
 from pathlib import Path
+from typing import Union
 import yaml
 
 import click
 
 
 _CONFIG_PATH = Path("~/.matcreator/config.yaml").expanduser()
+_DEFAULT_ADK_DIR = Path("~/.matcreator/.adk").expanduser()
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
-def _resolve_project_root() -> tuple[Path, bool]:
-    """Resolve the MatCreator project root.
-    Resolution order (first match wins):
-      1. ``MATCREATOR`` environment variable
-      2. ``project_root`` in ``~/.matcreator/config.yaml``
-      3. Fallback: derive from ``__file__`` (works for editable / source installs)
-    Returns (path, explicitly_configured).
+def _make_agent_loader():
+    """Return a custom AgentLoader that serves matcreator.agent.app directly.
+
+    This avoids ADK's file-based discovery (which is case-sensitive and tightly
+    coupled to a specific directory structure) and ensures session data lands in
+    ~/.matcreator/.adk/ regardless of where the CLI is invoked from.
     """
-    # 1. Environment variable
-    env_val = os.environ.get("MATCREATOR")
-    if env_val:
-        return Path(env_val).expanduser().resolve(), True
+    from google.adk.cli.utils.base_agent_loader import BaseAgentLoader
 
-    # 2. Config file
-    if _CONFIG_PATH.is_file():
-        with open(_CONFIG_PATH) as fh:
-            raw_cfg = yaml.safe_load(fh)
-        cfg = raw_cfg if isinstance(raw_cfg, dict) else {}
-        cfg_val = cfg.get("project_root")
-        if cfg_val:
-            return Path(cfg_val).expanduser().resolve(), True
+    class _MatCreatorLoader(BaseAgentLoader):
+        def load_agent(self, agent_name: str):
+            from matcreator.agent import app
+            return app
 
-    # 3. Fallback: __file__-based (src/matcreator/scripts/start_agent.py → repo root)
-    return Path(__file__).resolve().parent.parent.parent.parent, False
+        def list_agents(self) -> list[str]:
+            return ["MatCreator"]
 
-PROJECT_ROOT, _project_root_explicit = _resolve_project_root()
-AGENTS_DIR = PROJECT_ROOT / "agents"
+    return _MatCreatorLoader()
 
-# Shared options applied to both subcommands
+
+def _start_adk_server(
+    host: str,
+    port: int,
+    log_level: str,
+    web_ui: bool,
+    reload_agents: bool = False,
+    reload: bool = False,
+) -> None:
+    """Start the ADK server programmatically with controlled session storage."""
+    import uvicorn
+    from google.adk.cli.fast_api import get_fast_api_app
+
+    session_db = _DEFAULT_ADK_DIR / "session.db"
+    session_db.parent.mkdir(parents=True, exist_ok=True)
+
+    fast_api = get_fast_api_app(
+        agents_dir=str(_DEFAULT_ADK_DIR),   # unused for discovery; loader overrides it
+        agent_loader=_make_agent_loader(),
+        session_service_uri=f"sqlite:///{session_db}",
+        web=web_ui,
+        host=host,
+        port=port,
+        reload_agents=reload_agents,
+    )
+
+    config = uvicorn.Config(
+        fast_api,
+        host=host,
+        port=port,
+        log_level=log_level,
+        reload=reload,
+    )
+    server = uvicorn.Server(config)
+    try:
+        server.run()
+    except KeyboardInterrupt:
+        pass
+
+
+# Shared options applied to web/api-server subcommands
 _shared_options = [
     click.option("--host", default="127.0.0.1", show_default=True,
                  help="Binding host for the ADK server."),
@@ -85,38 +125,67 @@ def add_shared_options(fn):
     return fn
 
 
-def _resolve_workspace() -> Path:
-    """Resolve the workspace root using the same logic as workspace.py."""
+def _default_workspace() -> Path:
+    """Resolve the default workspace using the same logic as workspace.py."""
     env_val = os.environ.get("MATCLAW_WORKSPACE", "")
     if env_val:
         return Path(env_val).expanduser().resolve()
-    return AGENTS_DIR / "MatCreator" / ".workspace"
+    return Path.home() / ".matcreator" / "workspace"
 
 
 def _setup_workspace(workspace: str | None) -> Path:
-    """Resolve, create, and chdir into the workspace root."""
+    """Set MATCLAW_WORKSPACE env var and return the resolved path."""
     if workspace:
         ws_root = Path(workspace).expanduser().resolve()
-        os.environ["MATCLAW_WORKSPACE"] = str(ws_root)
     else:
-        ws_root = _resolve_workspace()
-
+        ws_root = _default_workspace()
+    os.environ["MATCLAW_WORKSPACE"] = str(ws_root)
     ws_root.mkdir(parents=True, exist_ok=True)
-    click.echo(f"Workspace : {ws_root}")
-    click.echo(f"Agents dir: {AGENTS_DIR}")
-    os.chdir(ws_root)
-    click.echo(f"Working directory changed to: {ws_root}\n")
+    click.echo(f"Workspace: {ws_root}")
     return ws_root
 
 
-def _run(cmd: list[str]) -> None:
+
+def _run_with_env(cmd: list[str], env: dict[str, str]) -> None:
     click.echo("Starting: " + " ".join(cmd))
     try:
-        subprocess.run(cmd, check=True)
+        subprocess.run(cmd, check=True, env=env)
     except KeyboardInterrupt:
         pass
     except subprocess.CalledProcessError as exc:
         sys.exit(exc.returncode)
+
+
+def _ensure_project_imports() -> None:
+    """Add project root and agents dir to sys.path for imports."""
+    for p in (str(PROJECT_ROOT), str(PROJECT_ROOT / "agents")):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+
+
+def _resolve_kdg_cli() -> str:
+    """Resolve the know-do-graph executable from the current environment."""
+    local_bin = Path(sys.executable).resolve().with_name("know-do-graph")
+    if local_bin.is_file():
+        return str(local_bin)
+
+    found = shutil.which("know-do-graph")
+    if found:
+        return found
+
+    raise click.ClickException(
+        "Could not find the `know-do-graph` executable in the current environment."
+    )
+
+
+def _matcreator_kdg_env() -> dict[str, str]:
+    """Return an environment that pins KDG CLI calls to MatCreator's database."""
+    _ensure_project_imports()
+    from matcreator.constants import KNOW_DO_GRAPH_DB
+
+    env = os.environ.copy()
+    env["KDG_DB_PATH"] = str(KNOW_DO_GRAPH_DB)
+    return env
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
@@ -133,20 +202,14 @@ def main():
 def web(host, port, workspace, log_level, verbose, reload_agents, reload):
     """Launch the ADK web UI (browser-based chat interface)."""
     _setup_workspace(workspace)
-
-    cmd = [
-        "adk", "web",
-        str(AGENTS_DIR),
-        "--host", host,
-        "--port", str(port),
-        "--log_level", "debug" if verbose else log_level,
-    ]
-    if reload_agents:
-        cmd.append("--reload_agents")
-    if reload:
-        cmd.append("--reload")
-
-    _run(cmd)
+    _start_adk_server(
+        host=host,
+        port=port,
+        log_level="debug" if verbose else log_level,
+        web_ui=True,
+        reload_agents=reload_agents,
+        reload=reload,
+    )
 
 
 @main.command("api-server")
@@ -155,29 +218,75 @@ def web(host, port, workspace, log_level, verbose, reload_agents, reload):
               help="Enable live reload when agent files change.")
 @click.option("--reload", is_flag=True, default=False,
               help="Enable auto-reload for the FastAPI server.")
-def api_server(host, port, workspace, log_level, reload_agents,
-               verbose, reload):
+def api_server(host, port, workspace, log_level, reload_agents, verbose, reload):
     """Launch the ADK API server (used by the Streamlit app)."""
     _setup_workspace(workspace)
+    _start_adk_server(
+        host=host,
+        port=port,
+        log_level="debug" if verbose else log_level,
+        web_ui=False,
+        reload_agents=reload_agents,
+        reload=reload,
+    )
 
-    cmd = [
-        "adk", "api_server",
-        str(AGENTS_DIR),
-        "--host", host,
-        "--port", str(port),
-        "--log_level", "debug" if verbose else log_level,
-    ]
-    if reload:
-        cmd.append("--reload")
-        
-    if reload_agents:
-        cmd.append("--reload_agents")
 
-    _run(cmd)
+@main.group("graph", context_settings={"ignore_unknown_options": True})
+def graph_group():
+    """Run Know-Do Graph inspection commands against MatCreator's active database."""
+
+
+@graph_group.command(
+    "serve",
+    context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
+)
+@click.pass_context
+def graph_serve(ctx: click.Context) -> None:
+    """Launch the Know-Do Graph HTTP UI/server using MatCreator's active database."""
+    env = _matcreator_kdg_env()
+    cmd = [_resolve_kdg_cli(), "serve", *ctx.args]
+    _run_with_env(cmd, env)
+
+
+@graph_group.command(
+    "stats",
+    context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
+)
+@click.pass_context
+def graph_stats(ctx: click.Context) -> None:
+    """Show graph statistics using MatCreator's configured Know-Do Graph database."""
+    env = _matcreator_kdg_env()
+    cmd = [_resolve_kdg_cli(), "graph", "stats", *ctx.args]
+    _run_with_env(cmd, env)
+
+
+@graph_group.command(
+    "neighbors",
+    context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
+)
+@click.argument("entry_id")
+@click.pass_context
+def graph_neighbors(ctx: click.Context, entry_id: str) -> None:
+    """Show graph neighbors for an entry using MatCreator's active database."""
+    env = _matcreator_kdg_env()
+    cmd = [_resolve_kdg_cli(), "graph", "neighbors", entry_id, *ctx.args]
+    _run_with_env(cmd, env)
+
+
+@graph_group.command(
+    "export",
+    context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
+)
+@click.pass_context
+def graph_export(ctx: click.Context) -> None:
+    """Export graph entries using MatCreator's configured Know-Do Graph database."""
+    env = _matcreator_kdg_env()
+    cmd = [_resolve_kdg_cli(), "graph", "export", *ctx.args]
+    _run_with_env(cmd, env)
 
 
 # ---------------------------------------------------------------------------
-# Non-interactive runner core (used by `run` subcommand and benchmarks)
+# Non-interactive runner core (used by `run` and benchmarks)
 # ---------------------------------------------------------------------------
 
 async def run_agent_async(
@@ -194,20 +303,13 @@ async def run_agent_async(
     """
     os.environ["MATCLAW_WORKSPACE"] = str(Path(workspace_dir).resolve())
 
-    # agents/ lives at PROJECT_ROOT, which may not be on sys.path when matcreator
-    # is invoked with a cwd other than the repo root (e.g. from run_question_answer.py).
-    if str(PROJECT_ROOT) not in sys.path:
-        sys.path.insert(0, str(PROJECT_ROOT))
-
     from google.adk.runners import Runner
     from google.adk.sessions.sqlite_session_service import SqliteSessionService
     from google.genai import types
 
-    from agents.MatCreator.agent import app
+    from matcreator.agent import app
 
-    # Use a persistent SQLite session service so sessions written by `matcreator run`
-    # appear in the web frontend (which reads agents/MatCreator/.adk/session.db).
-    _adk_db = AGENTS_DIR / "MatCreator" / ".adk" / "session.db"
+    _adk_db = _DEFAULT_ADK_DIR / "session.db"
     _adk_db.parent.mkdir(parents=True, exist_ok=True)
     session_service = SqliteSessionService(db_path=str(_adk_db))
     runner = Runner(app=app, session_service=session_service)
@@ -247,7 +349,6 @@ async def run_agent_async(
 
     duration_ms = (time.monotonic_ns() // 1_000_000) - start_ms
 
-    # Extract final answer from the last event with text content
     answer = ""
     for event in reversed(events):
         if event.content and event.content.parts:
@@ -304,7 +405,7 @@ def run_cmd(workspace, prompt_text, prompt_file, output_format, output_file, max
     if prompt_file:
         prompt_text = Path(prompt_file).read_text().strip()
 
-    ws_root = Path(workspace).expanduser().resolve() if workspace else _resolve_workspace()
+    ws_root = Path(workspace).expanduser().resolve() if workspace else _default_workspace()
     ws_root.mkdir(parents=True, exist_ok=True)
 
     result = asyncio.run(run_agent_async(str(ws_root), prompt_text, max_turns, session_id, flash))
@@ -322,6 +423,121 @@ def run_cmd(workspace, prompt_text, prompt_file, output_format, output_file, max
 
 
 # ---------------------------------------------------------------------------
+# `matcreator chat` subcommand — interactive terminal REPL
+# ---------------------------------------------------------------------------
+
+async def _chat_loop(workspace_dir: Path, session_id: str, agent_mode: str = "flash") -> None:
+    """Run the interactive agent REPL."""
+    from google.adk.runners import Runner
+    from google.adk.sessions.sqlite_session_service import SqliteSessionService
+    from google.genai import types
+
+    from matcreator.agent import app
+    from matcreator.workspace import init_workspace
+
+    init_workspace()
+
+    _adk_db = _DEFAULT_ADK_DIR / "session.db"
+    _adk_db.parent.mkdir(parents=True, exist_ok=True)
+    session_service = SqliteSessionService(db_path=str(_adk_db))
+    runner = Runner(app=app, session_service=session_service)
+
+    session = await runner.session_service.create_session(
+        app_name=app.name,
+        user_id="user",
+        state={"agent_mode": agent_mode},
+        session_id=session_id,
+    )
+    actual_id = session.id
+
+    mode_label = "Flash" if agent_mode == "flash" else "Plan"
+    click.echo(f"\nMatCreator chat  |  workspace: {workspace_dir}  |  mode: {mode_label}")
+    click.echo(f"Session: {actual_id}")
+    click.echo("Type /quit or /exit to end.  /session shows the session ID.  /workspace shows the path.")
+    click.echo("─" * 60)
+
+    while True:
+        try:
+            user_input = input("\nYou> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            click.echo(f"\n\nSession saved.  Resume with: matcreator chat --session {actual_id}")
+            break
+
+        if not user_input:
+            continue
+
+        if user_input in ("/quit", "/exit", "quit", "exit"):
+            click.echo(f"\nSession saved.  Resume with: matcreator chat --session {actual_id}")
+            break
+        if user_input == "/session":
+            click.echo(f"Session ID: {actual_id}")
+            continue
+        if user_input == "/workspace":
+            click.echo(f"Workspace: {workspace_dir}")
+            continue
+
+        user_message = types.Content(
+            role="user",
+            parts=[types.Part(text=user_input)],
+        )
+
+        click.echo("\nMatCreator> ", nl=False)
+        answer_parts: list[str] = []
+        try:
+            async for event in runner.run_async(
+                user_id="user",
+                session_id=actual_id,
+                new_message=user_message,
+            ):
+                if event.content and event.content.parts:
+                    for part in event.content.parts:
+                        if hasattr(part, "text") and part.text:
+                            click.echo(part.text, nl=False)
+                            answer_parts.append(part.text)
+        except KeyboardInterrupt:
+            click.echo("\n[interrupted]")
+            continue
+        except Exception as exc:
+            click.echo(f"\n[error: {exc}]")
+            continue
+
+        if answer_parts:
+            click.echo()  # newline after streamed answer
+
+
+@main.command("chat")
+@click.option("--workspace", default=None, metavar="DIR",
+              help="Workspace directory (defaults to current working directory).")
+@click.option("--session", "session_id", default=None, metavar="SESSION_ID",
+              help="Resume an existing session by ID.")
+@click.option("--plan", "use_plan", is_flag=True, default=False,
+              help="Use standard plan mode (thinking + DAG execution) instead of the default Flash mode.")
+def chat_cmd(workspace, session_id, use_plan):
+    """Run the agent interactively in the terminal.
+
+    Defaults to Flash mode for fast, direct responses.  Pass --plan to use
+    the full planning + execution pipeline instead.
+
+    The workspace defaults to the current working directory, making it easy
+    to use MatCreator directly from any project folder.  All session state
+    is stored in ~/.matcreator/.adk/.  Resume a previous session with
+    --session <id>.
+    """
+    if workspace:
+        ws_root = Path(workspace).expanduser().resolve()
+    else:
+        ws_root = Path.cwd()
+
+    ws_root.mkdir(parents=True, exist_ok=True)
+    os.environ["MATCLAW_WORKSPACE"] = str(ws_root)
+    warnings.filterwarnings("ignore", category=UserWarning)
+
+    agent_mode = "normal" if use_plan else "flash"
+    sid = session_id or str(uuid.uuid4())
+    asyncio.run(_chat_loop(ws_root, sid, agent_mode))
+
+
+# ---------------------------------------------------------------------------
 # `matcreator knowledge` subcommand group
 # ---------------------------------------------------------------------------
 
@@ -330,11 +546,11 @@ def knowledge_group():
     """Inspect and manage the knowledge graph."""
 
 
-def _ensure_path(project_root: Path) -> None:
-    """Add project root and agents dir to sys.path for imports."""
-    for p in (str(project_root), str(project_root / "agents")):
-        if p not in sys.path:
-            sys.path.insert(0, p)
+def _ensure_workspace(workspace: str | None) -> None:
+    if workspace:
+        ws_root = Path(workspace).expanduser().resolve()
+        os.environ["MATCLAW_WORKSPACE"] = str(ws_root)
+        ws_root.mkdir(parents=True, exist_ok=True)
 
 
 @knowledge_group.command("query")
@@ -347,9 +563,8 @@ def _ensure_path(project_root: Path) -> None:
               help="Override the workspace root directory.")
 def knowledge_query(text, top_k, depth, workspace):
     """Query the memory knowledge graph for nodes matching TEXT."""
-    _setup_workspace(workspace)
-    _ensure_path(PROJECT_ROOT)
-    from agents.MatCreator.knowledge.query import query_knowledge_graph
+    _ensure_workspace(workspace)
+    from matcreator.knowledge.query import query_knowledge_graph
     result = query_knowledge_graph(text, depth=depth, top_k=top_k)
     click.echo(result)
 
@@ -362,9 +577,8 @@ def knowledge_query(text, top_k, depth, workspace):
               help="Override the workspace root directory.")
 def knowledge_search_skills(text, top_k, workspace):
     """Search for skill nodes semantically matching TEXT."""
-    _setup_workspace(workspace)
-    _ensure_path(PROJECT_ROOT)
-    from agents.MatCreator.knowledge.query import search_skills
+    _ensure_workspace(workspace)
+    from matcreator.knowledge.query import search_skills
     result = search_skills(text, top_k=top_k)
     click.echo(result)
 
@@ -379,9 +593,8 @@ def knowledge_search_skills(text, top_k, workspace):
               help="Override the workspace root directory.")
 def knowledge_related_skills(start_node, top_k, depth, workspace):
     """Traverse the dependency graph from a known skill START_NODE."""
-    _setup_workspace(workspace)
-    _ensure_path(PROJECT_ROOT)
-    from agents.MatCreator.knowledge.query import get_related_skills
+    _ensure_workspace(workspace)
+    from matcreator.knowledge.query import get_related_skills
     result = get_related_skills(start_node, top_k=top_k, depth=depth)
     click.echo(result)
 
@@ -391,10 +604,9 @@ def knowledge_related_skills(start_node, top_k, depth, workspace):
               help="Override the workspace root directory.")
 def knowledge_stats(workspace):
     """Print durable Know-Do and writable MemGraph counts."""
-    _setup_workspace(workspace)
-    _ensure_path(PROJECT_ROOT)
-    from agents.MatCreator.knowledge.kdg_memory import iter_memory
-    from agents.MatCreator.knowledge.query import _get_kg
+    _ensure_workspace(workspace)
+    from matcreator.knowledge.kdg_memory import iter_memory
+    from matcreator.knowledge.query import _get_kg
     graph = _get_kg()
     stats = graph.stats()
     memories = list(iter_memory(graph))
@@ -412,9 +624,8 @@ def knowledge_stats(workspace):
               help="Override the workspace root directory.")
 def knowledge_seed(workspace):
     """Seed Know-Do Graph with all SKILL.md and guide entries."""
-    _setup_workspace(workspace)
-    _ensure_path(PROJECT_ROOT)
-    from agents.MatCreator.skill import seed_skills_to_graph
+    _ensure_workspace(workspace)
+    from matcreator.skill import seed_skills_to_graph
     result = seed_skills_to_graph()
     click.echo(
         f"Created {result['seeded']} entries and "
@@ -429,12 +640,11 @@ def knowledge_seed(workspace):
               help="Also import a legacy MEMORY.md file.")
 def knowledge_migrate(workspace, memory_md):
     """Migrate legacy skill, memory, and optional MEMORY.md data."""
-    _setup_workspace(workspace)
-    _ensure_path(PROJECT_ROOT)
-    from agents.MatCreator.constants import KNOW_DO_GRAPH_DB
-    from agents.MatCreator.knowledge.kdg_memory import iter_memory
-    from agents.MatCreator.knowledge.migrate import migrate_memory_md
-    from agents.MatCreator.knowledge.query import _get_kg, get_migration_result
+    _ensure_workspace(workspace)
+    from matcreator.constants import KNOW_DO_GRAPH_DB
+    from matcreator.knowledge.kdg_memory import iter_memory
+    from matcreator.knowledge.migrate import migrate_memory_md
+    from matcreator.knowledge.query import _get_kg, get_migration_result
 
     result = get_migration_result()
     click.echo(
@@ -466,15 +676,90 @@ def knowledge_migrate(workspace, memory_md):
               help="Override the workspace root directory.")
 def knowledge_distill(min_evidence, stale_days, workspace):
     """Promote repeated successful memory into durable Know-Do entries."""
-    _setup_workspace(workspace)
-    _ensure_path(PROJECT_ROOT)
-    from agents.MatCreator.knowledge.synthesizer import run_knowledge_synthesizer
-
+    _ensure_workspace(workspace)
+    from matcreator.knowledge.synthesizer import run_knowledge_synthesizer
     result = run_knowledge_synthesizer(
         stale_days=stale_days,
         min_insights_for_workflow=min_evidence,
     )
     click.echo(result["message"])
+
+
+# ---------------------------------------------------------------------------
+# `matcreator config` subcommand group
+# ---------------------------------------------------------------------------
+
+_SENSITIVE_CONFIG_KEYS = frozenset({"llm.api_key", "bohrium.password"})
+
+
+def _mask(key: str, value: str) -> str:
+    return "***" if key in _SENSITIVE_CONFIG_KEYS and value else value
+
+
+@main.group("config")
+def config_group():
+    """Read and write ~/.matcreator/config.yaml settings."""
+
+
+@config_group.command("set")
+@click.argument("assignment", metavar="KEY=VALUE")
+def config_set(assignment: str):
+    """Set a config value.
+
+    KEY uses dotted notation: section.field (e.g. llm.api_key, bohrium.email).
+    """
+    if "=" not in assignment:
+        raise click.UsageError("Expected KEY=VALUE format (e.g. llm.api_key=sk-xxx)")
+    key, _, value = assignment.partition("=")
+    key = key.strip()
+    value = value.strip()
+    if not key:
+        raise click.UsageError("Key must not be empty.")
+    from matcreator.config import set_config_value
+    set_config_value(key, value)
+    display = _mask(key, value)
+    click.echo(f"Set {key} = {display}")
+
+
+@config_group.command("get")
+@click.argument("key")
+@click.option("--reveal", is_flag=True, default=False, help="Show secret values in plain text.")
+def config_get(key: str, reveal: bool):
+    """Print the value of KEY from ~/.matcreator/config.yaml."""
+    from matcreator.config import get_config_value
+    value = get_config_value(key)
+    display = value if reveal else _mask(key, value)
+    if display:
+        click.echo(display)
+    else:
+        click.echo("(not set)", err=True)
+        raise SystemExit(1)
+
+
+@config_group.command("show")
+@click.option("--reveal-secrets", is_flag=True, default=False,
+              help="Show API keys and passwords in plain text.")
+def config_show(reveal_secrets: bool):
+    """Print all settings from ~/.matcreator/config.yaml."""
+    from matcreator.config import load_config, SENSITIVE_YAML_KEYS
+    cfg = load_config()
+    if not cfg:
+        click.echo("No config file found at ~/.matcreator/config.yaml")
+        return
+
+    def _mask_cfg(section: str, key: str, value: object) -> object:
+        dotted = f"{section}.{key}"
+        if not reveal_secrets and dotted in SENSITIVE_YAML_KEYS and value:
+            return "***"
+        return value
+
+    for section, content in cfg.items():
+        if isinstance(content, dict):
+            click.echo(f"{section}:")
+            for k, v in content.items():
+                click.echo(f"  {k}: {_mask_cfg(section, k, v)}")
+        else:
+            click.echo(f"{section}: {content}")
 
 
 if __name__ == "__main__":

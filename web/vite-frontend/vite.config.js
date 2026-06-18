@@ -16,17 +16,17 @@ export default defineConfig({
     proxy: {
       "/api": "http://localhost:8001",
       "/run_sse": {
-        target: "http://localhost:8000",
+        target: "http://localhost:8001",
         changeOrigin: true,
         configure: stripOrigin,
       },
       "/apps": {
-        target: "http://localhost:8000",
+        target: "http://localhost:8001",
         changeOrigin: true,
         configure: stripOrigin,
       },
       "/list-apps": {
-        target: "http://localhost:8000",
+        target: "http://localhost:8001",
         changeOrigin: true,
         configure: stripOrigin,
       },

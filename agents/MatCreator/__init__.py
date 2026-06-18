@@ -1,9 +1,5 @@
-"""MatCreator agent package.
+"""Backward-compatibility stub — real implementation is in the matcreator package."""
 
-Exports the ADK ``App`` instance (``app``) that wires together the root
-orchestration agent, thinking/execution sub-agents, and the session
-resumability / compaction configuration.
-"""
+from matcreator.agent import app  # noqa: F401
 
-from .agent import app  # noqa: F401
 __all__ = ["app"]

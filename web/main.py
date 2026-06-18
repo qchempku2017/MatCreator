@@ -31,43 +31,44 @@ import threading
 from pathlib import Path
 from typing import List
 
+import httpx
 import yaml
 
 from dotenv import dotenv_values
 from dotenv import set_key as dotenv_set_key
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-# Allow importing from agents/ and src/ when running as script
+# Allow importing users_db from the web/ directory
 ROOT = Path(__file__).parent.parent
 _WEB_DIR = Path(__file__).parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
 if str(_WEB_DIR) not in sys.path:
     sys.path.insert(0, str(_WEB_DIR))
 
 import users_db  # noqa: E402
 
-from agents.MatCreator.workspace import get_session_workdir, get_workspace_root, workspace_skills_dir  # noqa: E402
-from agents.MatCreator.agents.cancellation import (  # noqa: E402
+from matcreator.workspace import get_session_workdir, get_workspace_root, workspace_skills_dir  # noqa: E402
+from matcreator.agents.cancellation import (  # noqa: E402
     request_cancellation,
     is_cancellation_requested,
     get_cancellation_reason,
     clear_cancellation,
     request_step_cancellation,
 )
-from agents.MatCreator.agents.graph_logger import AgentGraphLogger  # noqa: E402
-from agents.MatCreator.skill import ALL_SKILLS, PLANNING_SKILL_NAMES, refresh_skills, get_default_skill_names  # noqa: E402
-from agents.MatCreator.config import load_config, save_config, get_disabled_skills  # noqa: E402
-from agents.MatCreator.constants import GRAPH_AGENT_MODEL  # noqa: E402
-from agents.MatCreator.knowledge.query import _get_kg  # noqa: E402
-from agents.MatCreator.knowledge.review import run_review_pipeline  # noqa: E402
+from matcreator.agents.graph_logger import AgentGraphLogger  # noqa: E402
+from matcreator.skill import ALL_SKILLS, PLANNING_SKILL_NAMES, refresh_skills, get_default_skill_names  # noqa: E402
+from matcreator.config import load_config, save_config, get_disabled_skills  # noqa: E402
+from matcreator.config import ENV_TO_YAML, YAML_TO_ENV, SENSITIVE_YAML_KEYS  # noqa: E402
+from matcreator.constants import GRAPH_AGENT_MODEL  # noqa: E402
+from matcreator.knowledge.query import _get_kg  # noqa: E402
+from matcreator.knowledge.review import run_review_pipeline  # noqa: E402
 
 app = FastAPI(title="MatCreator Graph API", version="1.0.0")
 APP_NAME = "MatCreator"
-SESSION_DB_PATH = ROOT / "agents" / "MatCreator" / ".adk" / "session.db"
+SESSION_DB_PATH = Path("~/.matcreator/.adk/session.db").expanduser()
+_ADK_DIR = Path("~/.matcreator/.adk").expanduser()
 DEFAULT_ADMIN_USERS = {"admin"}
 
 app.add_middleware(
@@ -77,7 +78,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-ENV_PATH = ROOT / "agents" / "MatCreator" / ".env"
+ENV_PATH = Path("~/.matcreator/.env").expanduser()
 _SENSITIVE_FIELDS = frozenset({"LLM_API_KEY", "BOHRIUM_PASSWORD"})
 _ENV_FIELDS = [
     "LLM_MODEL", "LLM_API_KEY", "LLM_BASE_URL", "EMBEDDING_MODEL",
@@ -97,12 +98,358 @@ _knowledge_review_state = {
     "errors": [],
     "summary": "",
 }
+_LEGACY_ENV_ALIASES = {
+    "LLM_API_KEY": "MINIMAX_API_KEY",
+    "LLM_BASE_URL": "MINIMAX_API_BASE",
+}
 
 
-def _is_port_open(port: int, host: str = "127.0.0.1") -> bool:
+def _config_value_for_env_key(env_key: str) -> str:
+    yaml_key = ENV_TO_YAML.get(env_key)
+    if not yaml_key:
+        return ""
+    parts = yaml_key.split(".", 1)
+    config = load_config()
+    if len(parts) == 1:
+        value = config.get(parts[0], "")
+    else:
+        value = config.get(parts[0], {}).get(parts[1], "")
+    return "" if value is None else str(value)
+
+
+def _dotenv_value(env_key: str) -> str:
+    if not ENV_PATH.exists():
+        return ""
+    value = dotenv_values(ENV_PATH).get(env_key, "")
+    return "" if value is None else str(value)
+
+
+def _runtime_env_value(env_key: str) -> str:
+    """Resolve a setting from the active runtime plus persisted UI settings."""
+    mode = os.environ.get("MATCREATOR_MODE", "local")
+    if mode == "local":
+        value = (
+            _config_value_for_env_key(env_key)
+            or os.environ.get(env_key, "")
+            or _dotenv_value(env_key)
+        )
+    else:
+        value = _dotenv_value(env_key) or os.environ.get(env_key, "")
+    if value:
+        return value
+    legacy_key = _LEGACY_ENV_ALIASES.get(env_key)
+    if not legacy_key:
+        return ""
+    return _dotenv_value(legacy_key) or os.environ.get(legacy_key, "")
+
+# ---------------------------------------------------------------------------
+# Server-mode worker management
+# ---------------------------------------------------------------------------
+# In server mode each user gets a dedicated Docker container running the ADK
+# API server.  The control plane (this process) proxies /run_sse and /apps/*
+# to the correct worker and manages the container lifecycle.
+
+_MATCREATOR_MODE = os.environ.get("MATCREATOR_MODE", "local")
+_ADK_LOCAL_PORT = int(os.environ.get("ADK_LOCAL_PORT", "8000"))
+_WORKER_IMAGE = os.environ.get("MATCREATOR_WORKER_IMAGE", "matcreator:latest")
+_WORKER_NETWORK = os.environ.get("MATCREATOR_WORKER_NETWORK", "matcreator-net")
+_WORKER_BASE_PORT = int(os.environ.get("MATCREATOR_WORKER_BASE_PORT", "9001"))
+# Host-side root for per-user session bind-mounts (Option A).
+_SESSIONS_HOST_ROOT = Path(os.environ.get("MATCREATOR_SESSIONS_HOST_ROOT",
+                                          str(ROOT / "server-data" / "sessions")))
+
+_worker_registry: dict[str, int] = {}   # user_id → host port
+_worker_registry_lock = threading.Lock()
+_docker_client = None
+
+
+def _get_docker():
+    global _docker_client
+    if _docker_client is None:
+        try:
+            import docker as _docker
+            _docker_client = _docker.from_env()
+        except Exception as exc:
+            raise RuntimeError(f"Docker unavailable: {exc}") from exc
+    return _docker_client
+
+
+def _worker_container_name(user_id: str) -> str:
+    safe = re.sub(r"[^a-zA-Z0-9_-]", "-", user_id)[:24]
+    return f"matcreator-worker-{safe}"
+
+
+def _next_free_port() -> int:
+    used = set(_worker_registry.values())
+    port = _WORKER_BASE_PORT
+    while port in used:
+        port += 1
+    return port
+
+
+def _worker_env_vars() -> dict[str, str]:
+    """Credentials to forward into each worker container."""
+    keys = [
+        "LLM_MODEL", "LLM_API_KEY", "LLM_BASE_URL", "EMBEDDING_MODEL",
+        "GRAPH_AGENT_MODEL", "REVIEW_AGENT_MODEL",
+        "BOHRIUM_USERNAME", "BOHRIUM_PASSWORD", "BOHRIUM_PROJECT_ID",
+        "BOHRIUM_VASP_IMAGE", "BOHRIUM_VASP_MACHINE",
+        "BOHRIUM_DEEPMD_IMAGE", "BOHRIUM_DEEPMD_MACHINE", "DEEPMD_MODEL_PATH",
+        "KDG_EMBED_MODEL", "HF_HUB_OFFLINE",
+    ]
+    return {k: v for k in keys if (v := _runtime_env_value(k))}
+
+
+def ensure_worker_running(user_id: str) -> int:
+    """Ensure the worker container for *user_id* is running.
+
+    Returns the localhost port the worker's ADK server is reachable on.
+    Creates the container if it doesn't exist.
+    """
+    import docker as _docker
+
+    with _worker_registry_lock:
+        name = _worker_container_name(user_id)
+        dc = _get_docker()
+
+        # If we already know the port, verify the container is still running.
+        if user_id in _worker_registry:
+            port = _worker_registry[user_id]
+            try:
+                c = dc.containers.get(name)
+                if c.status != "running":
+                    c.start()
+                return port
+            except _docker.errors.NotFound:
+                del _worker_registry[user_id]
+
+        # Container might exist from a previous server start.
+        try:
+            c = dc.containers.get(name)
+            bindings = c.ports.get("8000/tcp") or []
+            if bindings:
+                port = int(bindings[0]["HostPort"])
+                _worker_registry[user_id] = port
+                if c.status != "running":
+                    c.start()
+                return port
+            # No port binding — remove stale container and recreate.
+            c.remove(force=True)
+        except _docker.errors.NotFound:
+            pass
+
+        # Create a fresh worker container.
+        port = _next_free_port()
+        session_dir = _SESSIONS_HOST_ROOT / user_id
+        session_dir.mkdir(parents=True, exist_ok=True)
+
+        env_vars = _worker_env_vars()
+        env_vars["MATCREATOR_MODE"] = "server"
+        env_vars["MATCREATOR_USER_ID"] = user_id
+
+        run_kwargs: dict = dict(
+            image=_WORKER_IMAGE,
+            command=["matcreator", "api-server", "--host", "0.0.0.0", "--port", "8000"],
+            name=name,
+            environment=env_vars,
+            ports={"8000/tcp": port},
+            volumes={
+                str(session_dir): {
+                    "bind": "/root/.matcreator/.adk",
+                    "mode": "rw",
+                },
+                str(_SESSIONS_HOST_ROOT / user_id / "workspace"): {
+                    "bind": "/root/.matcreator/workspace",
+                    "mode": "rw",
+                },
+            },
+            detach=True,
+            restart_policy={"Name": "unless-stopped"},
+        )
+        if _WORKER_NETWORK:
+            run_kwargs["network"] = _WORKER_NETWORK
+
+        dc.containers.run(**run_kwargs)
+        _worker_registry[user_id] = port
+        return port
+
+
+def stop_worker(user_id: str) -> None:
+    """Stop (but keep) the worker container for *user_id*."""
+    try:
+        import docker as _docker
+        dc = _get_docker()
+        dc.containers.get(_worker_container_name(user_id)).stop(timeout=10)
+    except Exception:
+        pass
+
+
+def remove_worker(user_id: str) -> None:
+    """Stop and remove the worker container and clean up the registry."""
+    try:
+        import docker as _docker
+        dc = _get_docker()
+        dc.containers.get(_worker_container_name(user_id)).remove(force=True)
+    except Exception:
+        pass
+    _worker_registry.pop(user_id, None)
+
+
+def _list_workers() -> list[dict]:
+    """Return status info for all known worker containers."""
+    try:
+        import docker as _docker
+        dc = _get_docker()
+        results = []
+        for user_id, port in list(_worker_registry.items()):
+            name = _worker_container_name(user_id)
+            try:
+                c = dc.containers.get(name)
+                status = c.status
+            except _docker.errors.NotFound:
+                status = "missing"
+            results.append({"user_id": user_id, "container": name,
+                             "port": port, "status": status})
+        return results
+    except Exception as exc:
+        return [{"error": str(exc)}]
+
+
+async def _adk_target_port(request: Request) -> int:
+    """Return the ADK port to proxy to, starting a worker if needed."""
+    if _MATCREATOR_MODE != "server":
+        return _ADK_LOCAL_PORT
+
+    # Determine user_id from body or query string.
+    user_id = request.query_params.get("user_id", "")
+    if not user_id:
+        try:
+            body = await request.body()
+            if body:
+                payload = json.loads(body)
+                user_id = payload.get("user_id", "")
+        except Exception:
+            pass
+
+    if not user_id:
+        raise HTTPException(status_code=400,
+                            detail="user_id required to route to worker in server mode")
+
+    return await asyncio.to_thread(ensure_worker_running, user_id)
+
+
+
+def _is_port_open(host: str = "127.0.0.1", port: int = 8000) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.settimeout(0.5)
         return s.connect_ex((host, port)) == 0
+
+
+# ---------------------------------------------------------------------------
+# ADK proxy routes — forward /run_sse, /apps/*, /list-apps to the right worker
+# ---------------------------------------------------------------------------
+
+async def _proxy_request(request: Request, port: int, path: str) -> Response:
+    url = f"http://127.0.0.1:{port}/{path.lstrip('/')}"
+    params = dict(request.query_params)
+    headers = {k: v for k, v in request.headers.items()
+               if k.lower() not in ("host", "content-length")}
+    body = await request.body()
+    async with httpx.AsyncClient(timeout=None) as client:
+        resp = await client.request(
+            method=request.method,
+            url=url,
+            params=params,
+            headers=headers,
+            content=body,
+        )
+    return Response(
+        content=resp.content,
+        status_code=resp.status_code,
+        headers=dict(resp.headers),
+        media_type=resp.headers.get("content-type"),
+    )
+
+
+async def _proxy_sse(request: Request, port: int, path: str):
+    url = f"http://127.0.0.1:{port}/{path.lstrip('/')}"
+    params = dict(request.query_params)
+    headers = {k: v for k, v in request.headers.items()
+               if k.lower() not in ("host", "content-length")}
+    body = await request.body()
+
+    async def stream():
+        async with httpx.AsyncClient(timeout=None) as client:
+            async with client.stream(
+                method=request.method,
+                url=url,
+                params=params,
+                headers=headers,
+                content=body,
+            ) as resp:
+                async for chunk in resp.aiter_bytes():
+                    yield chunk
+
+    return StreamingResponse(stream(), media_type="text/event-stream")
+
+
+@app.api_route("/run_sse", methods=["GET", "POST"])
+async def proxy_run_sse(request: Request):
+    port = await _adk_target_port(request)
+    return await _proxy_sse(request, port, "/run_sse")
+
+
+@app.api_route("/apps/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
+async def proxy_apps(path: str, request: Request):
+    port = await _adk_target_port(request)
+    return await _proxy_request(request, port, f"/apps/{path}")
+
+
+@app.api_route("/list-apps", methods=["GET"])
+async def proxy_list_apps(request: Request):
+    port = await _adk_target_port(request)
+    return await _proxy_request(request, port, "/list-apps")
+
+
+# ---------------------------------------------------------------------------
+# Worker management API
+# ---------------------------------------------------------------------------
+
+@app.get("/api/workers")
+async def list_workers(user_id: str = Query(...)) -> JSONResponse:
+    if not _is_admin(user_id):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return JSONResponse(_list_workers())
+
+
+@app.post("/api/workers/{worker_user_id}/start")
+async def start_worker_api(worker_user_id: str, user_id: str = Query(...)) -> JSONResponse:
+    if not _is_admin(user_id):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    if _MATCREATOR_MODE != "server":
+        raise HTTPException(status_code=400, detail="Worker management only available in server mode")
+    port = await asyncio.to_thread(ensure_worker_running, worker_user_id)
+    return JSONResponse({"user_id": worker_user_id, "port": port, "status": "running"})
+
+
+@app.post("/api/workers/{worker_user_id}/stop")
+async def stop_worker_api(worker_user_id: str, user_id: str = Query(...)) -> JSONResponse:
+    if not _is_admin(user_id):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    if _MATCREATOR_MODE != "server":
+        raise HTTPException(status_code=400, detail="Worker management only available in server mode")
+    await asyncio.to_thread(stop_worker, worker_user_id)
+    return JSONResponse({"user_id": worker_user_id, "status": "stopped"})
+
+
+@app.delete("/api/workers/{worker_user_id}")
+async def remove_worker_api(worker_user_id: str, user_id: str = Query(...)) -> JSONResponse:
+    if not _is_admin(user_id):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    if _MATCREATOR_MODE != "server":
+        raise HTTPException(status_code=400, detail="Worker management only available in server mode")
+    await asyncio.to_thread(remove_worker, worker_user_id)
+    return JSONResponse({"user_id": worker_user_id, "status": "removed"})
 
 
 def _kill_port(port: int) -> None:
@@ -151,6 +498,9 @@ def _session_row_to_summary(row: sqlite3.Row) -> dict:
 
 
 def _query_session_summaries(user_id: str | None = None) -> list[dict]:
+    if _MATCREATOR_MODE == "server":
+        return _query_session_summaries_server(user_id)
+
     if not SESSION_DB_PATH.exists():
         return []
 
@@ -178,6 +528,39 @@ def _query_session_summaries(user_id: str | None = None) -> list[dict]:
     return [_session_row_to_summary(row) for row in rows]
 
 
+def _query_session_summaries_server(user_id: str | None = None) -> list[dict]:
+    """In server mode, aggregate sessions from all per-user session DBs."""
+    if not _SESSIONS_HOST_ROOT.exists():
+        return []
+
+    results: list[dict] = []
+    # Each user's DB is at _SESSIONS_HOST_ROOT/<user_id>/session.db
+    # (Option A bind-mount layout)
+    db_paths = list(_SESSIONS_HOST_ROOT.glob("*/session.db"))
+    for db_path in db_paths:
+        owner_id = db_path.parent.name
+        if user_id is not None and owner_id != user_id:
+            continue
+        try:
+            with sqlite3.connect(db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    """
+                    SELECT app_name, user_id, id, create_time, update_time
+                    FROM sessions
+                    WHERE app_name = ?
+                    ORDER BY update_time DESC
+                    """,
+                    (APP_NAME,),
+                ).fetchall()
+            results.extend(_session_row_to_summary(r) for r in rows)
+        except sqlite3.Error:
+            continue
+
+    results.sort(key=lambda r: r.get("lastUpdateTime") or "", reverse=True)
+    return results
+
+
 def _load_json_field(raw_value: str | None, fallback):
     if not raw_value:
         return fallback
@@ -188,13 +571,51 @@ def _load_json_field(raw_value: str | None, fallback):
 
 
 def _load_agent_graph_data(session_id: str) -> dict:
-    graph_path = get_workspace_root() / "agent_graphs" / f"{session_id}.json"
+    graph_path = _ADK_DIR / "agent_graphs" / f"{session_id}.json"
     if not graph_path.exists():
         return {}
     try:
         return json.loads(graph_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return {}
+
+
+def _get_workdir_for_session(session_id: str) -> Path:
+    """Resolve workdir for a session, preferring the value stored in session state.
+
+    Priority: state["workdir"] → state["custom_workdir"] → computed default.
+    In server mode, custom paths outside WORKSPACE_ROOT are rejected.
+    """
+    if SESSION_DB_PATH.exists():
+        try:
+            with sqlite3.connect(SESSION_DB_PATH) as conn:
+                row = conn.execute(
+                    "SELECT state FROM sessions WHERE app_name = ? AND id = ?",
+                    (APP_NAME, session_id),
+                ).fetchone()
+                if row:
+                    s = _load_json_field(row[0], {})
+                    path_str = s.get("workdir") or s.get("custom_workdir")
+                    if path_str:
+                        candidate = Path(path_str).expanduser().resolve()
+                        if _MATCREATOR_MODE == "server":
+                            ws_root = get_workspace_root().resolve()
+                            if candidate.is_relative_to(ws_root):
+                                return candidate
+                        else:
+                            return candidate
+        except sqlite3.Error:
+            pass
+    # Fall back to config.yaml default_workdir before using WORKSPACE_ROOT
+    cfg_workdir = (load_config().get("workspace") or {}).get("default_workdir") or ""
+    if cfg_workdir:
+        candidate = Path(cfg_workdir).expanduser().resolve()
+        if _MATCREATOR_MODE == "server":
+            if candidate.is_relative_to(get_workspace_root().resolve()):
+                return candidate
+        else:
+            return candidate
+    return get_session_workdir(session_id)
 
 
 def _safe_upload_filename(filename: str) -> str:
@@ -221,7 +642,8 @@ def _available_upload_path(upload_dir: Path, filename: str) -> Path:
 
 @app.get("/api/health")
 async def health_check():
-    return {"status": "ok"}
+    mode = os.environ.get("MATCREATOR_MODE", "local")
+    return {"status": "ok", "mode": mode}
 @app.on_event("startup")
 async def _on_startup() -> None:
     users_db.init_db()
@@ -259,12 +681,14 @@ def _set_knowledge_review_state(**changes) -> None:
 
 
 def _review_model_config() -> tuple[str, str, str | None]:
-    model = os.environ.get("REVIEW_AGENT_MODEL") or os.environ.get(
-        "GRAPH_AGENT_MODEL",
-        GRAPH_AGENT_MODEL,
+    model = (
+        _runtime_env_value("REVIEW_AGENT_MODEL")
+        or _runtime_env_value("GRAPH_AGENT_MODEL")
+        or _runtime_env_value("LLM_MODEL")
+        or GRAPH_AGENT_MODEL
     )
-    api_key = os.environ.get("LLM_API_KEY") or os.environ.get("MINIMAX_API_KEY", "")
-    base_url = os.environ.get("LLM_BASE_URL") or os.environ.get("MINIMAX_API_BASE") or None
+    api_key = _runtime_env_value("LLM_API_KEY")
+    base_url = _runtime_env_value("LLM_BASE_URL") or None
     if "/" in model:
         model = model.split("/", 1)[1]
     return model, api_key, base_url
@@ -275,11 +699,13 @@ async def _run_knowledge_review(session_id: str) -> None:
         model, api_key, base_url = _review_model_config()
         if not api_key:
             raise RuntimeError(
-                "No review API key configured. Set LLM_API_KEY in Settings or "
-                "MINIMAX_API_KEY in agents/MatCreator/.env."
+                "No review API key configured. Set LLM_API_KEY in Settings "
+                "(stored in ~/.matcreator/config.yaml in local mode)."
             )
         if not model:
-            raise RuntimeError("No REVIEW_AGENT_MODEL or GRAPH_AGENT_MODEL configured.")
+            raise RuntimeError(
+                "No REVIEW_AGENT_MODEL, GRAPH_AGENT_MODEL, or LLM_MODEL configured."
+            )
 
         def run_review() -> dict:
             graph = _get_kg()
@@ -356,6 +782,9 @@ async def auth_login(body: LoginBody) -> JSONResponse:
         raise HTTPException(status_code=404, detail="User not found. Please register first.")
     if user["password_hash"] is not None and not users_db.verify_password(user["password_hash"], body.password):
         raise HTTPException(status_code=401, detail="Invalid password.")
+
+    if _MATCREATOR_MODE == "server":
+        await asyncio.to_thread(ensure_worker_running, user["id"])
 
     return JSONResponse({
         "user_id": user["id"],
@@ -461,7 +890,7 @@ async def list_all_sessions(user_id: str = Query(..., description="Current signe
 
 @app.delete("/api/sessions/{session_id}")
 async def delete_session(session_id: str) -> JSONResponse:
-    """Delete a session and all associated data."""
+    """Delete a session and all associated metadata. Workspace files are not deleted."""
     # 1. Delete from session DB (events cascade-deleted via FK)
     if SESSION_DB_PATH.exists():
         try:
@@ -480,20 +909,17 @@ async def delete_session(session_id: str) -> JSONResponse:
         del summaries[session_id]
         _save_summaries(summaries)
 
-    # 3. Delete associated files/directories
+    # 3. Delete session-scoped metadata artifacts (not workspace files)
     workspace = get_workspace_root()
     targets = [
-        workspace / "agent_graphs" / f"{session_id}.json",
-        workspace / "sessions" / session_id,           # recursive dir
+        _ADK_DIR / "agent_graphs" / f"{session_id}.json",
         workspace / "trajectories" / f"{session_id}.jsonl",
         workspace / "trajectories" / f"{session_id}_summary.json",
         workspace / "cancellation" / f"{session_id}.flag",
     ]
     for target in targets:
         try:
-            if target.is_dir():
-                shutil.rmtree(target)
-            elif target.is_file():
+            if target.is_file():
                 target.unlink()
         except OSError:
             pass  # best-effort cleanup
@@ -542,11 +968,17 @@ async def get_agent_graph(session_id: str) -> JSONResponse:
 
 
 @app.get("/api/workspace/files")
-async def serve_workspace_file(path: str = Query(..., description="Absolute or workspace-relative file path")) -> FileResponse:
+async def serve_workspace_file(
+    path: str = Query(..., description="Absolute or workspace-relative file path"),
+    session_id: str = Query(default="", description="Session ID to resolve custom workdir boundaries"),
+) -> FileResponse:
     ws_root = get_workspace_root().resolve()
     p = Path(path)
     resolved = p.resolve() if p.is_absolute() else (ws_root / p).resolve()
-    if not resolved.is_relative_to(ws_root):
+    allowed = ws_root
+    if session_id:
+        allowed = _get_workdir_for_session(session_id).resolve()
+    if not resolved.is_relative_to(allowed) and not resolved.is_relative_to(ws_root):
         raise HTTPException(status_code=403, detail="Access denied: path is outside workspace")
     if not resolved.is_file():
         raise HTTPException(status_code=404, detail="File not found")
@@ -554,7 +986,10 @@ async def serve_workspace_file(path: str = Query(..., description="Absolute or w
 
 
 @app.get("/api/structure/view")
-async def view_structure(path: str = Query(..., description="Absolute or workspace-relative structure file path")) -> JSONResponse:
+async def view_structure(
+    path: str = Query(..., description="Absolute or workspace-relative structure file path"),
+    session_id: str = Query(default="", description="Session ID to resolve custom workdir boundaries"),
+) -> JSONResponse:
     from io import StringIO
 
     try:
@@ -566,7 +1001,10 @@ async def view_structure(path: str = Query(..., description="Absolute or workspa
     ws_root = get_workspace_root().resolve()
     p = Path(path)
     resolved = p.resolve() if p.is_absolute() else (ws_root / p).resolve()
-    if not resolved.is_relative_to(ws_root):
+    allowed = ws_root
+    if session_id:
+        allowed = _get_workdir_for_session(session_id).resolve()
+    if not resolved.is_relative_to(allowed) and not resolved.is_relative_to(ws_root):
         raise HTTPException(status_code=403, detail="Access denied: path is outside workspace")
     if not resolved.is_file():
         raise HTTPException(status_code=404, detail="File not found")
@@ -591,7 +1029,7 @@ async def view_structure(path: str = Query(..., description="Absolute or workspa
 
 @app.get("/api/sessions/{session_id}/files")
 async def list_session_files(session_id: str) -> JSONResponse:
-    session_dir = get_session_workdir(session_id)
+    session_dir = _get_workdir_for_session(session_id)
     if not session_dir.exists():
         return JSONResponse({"files": []})
     files = [
@@ -604,7 +1042,7 @@ async def list_session_files(session_id: str) -> JSONResponse:
 
 @app.post("/api/sessions/{session_id}/files")
 async def upload_session_file(session_id: str, file: UploadFile = File(...)) -> JSONResponse:
-    session_dir = get_session_workdir(session_id)
+    session_dir = _get_workdir_for_session(session_id)
     upload_dir = session_dir / "uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
 
@@ -634,7 +1072,7 @@ async def delete_session_file(
     session_id: str,
     path: str = Query(..., description="Absolute or session-relative file path"),
 ) -> JSONResponse:
-    session_dir = get_session_workdir(session_id).resolve()
+    session_dir = _get_workdir_for_session(session_id).resolve()
     p = Path(path)
     resolved = p.resolve() if p.is_absolute() else (session_dir / p).resolve()
 
@@ -662,8 +1100,9 @@ async def cancel_session_execution(
     periodically during a step (force). The flag is cleared automatically
     when the orchestrator routes back to the planner.
     """
-    request_cancellation(session_id, reason)
-    AgentGraphLogger(session_id).mark_running_nodes_cancelled(
+    await asyncio.to_thread(request_cancellation, session_id, reason)
+    await asyncio.to_thread(
+        AgentGraphLogger(session_id).mark_running_nodes_cancelled,
         summary=f"Cancelled by user ({reason})"
     )
     return JSONResponse({
@@ -707,9 +1146,10 @@ async def cancel_individual_step(
     The graph node for that step is updated immediately so the frontend reflects
     the cancellation before the executor polls.
     """
-    request_step_cancellation(session_id, step_number, reason)
-    found = AgentGraphLogger(session_id).cancel_step_node_by_number(
-        step_number, summary=f"Cancelled by user ({reason})"
+    await asyncio.to_thread(request_step_cancellation, session_id, step_number, reason)
+    found = await asyncio.to_thread(
+        AgentGraphLogger(session_id).cancel_step_node_by_number,
+        step_number, f"Cancelled by user ({reason})"
     )
     return JSONResponse({
         "status": "ok",
@@ -723,7 +1163,7 @@ async def cancel_individual_step(
 @app.get("/api/skills")
 async def list_skills() -> JSONResponse:
     """Return all loaded skills with their planning_enabled status and parent skill (if any)."""
-    from agents.MatCreator.skill import _MODULE_SKILLS_ROOT, _discover_skill_dirs  # noqa: PLC0415
+    from matcreator.skill import _MODULE_SKILLS_ROOT, _discover_skill_dirs  # noqa: PLC0415
 
     parent_map: dict[str, str] = {}
     for root in [_MODULE_SKILLS_ROOT, workspace_skills_dir()]:
@@ -882,6 +1322,7 @@ class SettingsBody(BaseModel):
     planning: dict | None = None
     user: dict | None = None
     skills: dict | None = None
+    workspace: dict | None = None
 
 
 @app.put("/api/settings")
@@ -894,6 +1335,8 @@ async def update_settings(body: SettingsBody) -> JSONResponse:
         config.setdefault("user", {}).update(body.user)
     if body.skills is not None:
         config.setdefault("skills", {}).update(body.skills)
+    if body.workspace is not None:
+        config.setdefault("workspace", {}).update(body.workspace)
     save_config(config)
     try:
         refresh_skills()
@@ -907,12 +1350,30 @@ async def update_settings(body: SettingsBody) -> JSONResponse:
 
 @app.get("/api/env-config")
 async def get_env_config() -> JSONResponse:
-    """Return the current .env configuration, masking sensitive fields."""
-    values = dotenv_values(ENV_PATH) if ENV_PATH.exists() else {}
-    result = {}
-    for field in _ENV_FIELDS:
-        val = values.get(field, "")
-        result[field] = "***" if (field in _SENSITIVE_FIELDS and val) else val
+    """Return current LLM/compute configuration, masking sensitive fields.
+
+    In local mode, values come from ~/.matcreator/config.yaml (with .env as
+    fallback). In server mode, values come from the .env file as before.
+    """
+    mode = os.environ.get("MATCREATOR_MODE", "local")
+    result: dict[str, str] = {}
+
+    if mode == "local":
+        from matcreator.config import get_config_value
+        for env_key in _ENV_FIELDS:
+            yaml_key = ENV_TO_YAML.get(env_key)
+            if yaml_key:
+                val = get_config_value(yaml_key)
+            else:
+                val = dotenv_values(ENV_PATH).get(env_key, "") if ENV_PATH.exists() else ""
+            sensitive = yaml_key in SENSITIVE_YAML_KEYS if yaml_key else env_key in _SENSITIVE_FIELDS
+            result[env_key] = "***" if (sensitive and val) else val
+    else:
+        values = dotenv_values(ENV_PATH) if ENV_PATH.exists() else {}
+        for field in _ENV_FIELDS:
+            val = values.get(field, "")
+            result[field] = "***" if (field in _SENSITIVE_FIELDS and val) else val
+
     return JSONResponse(result)
 
 
@@ -922,25 +1383,73 @@ class EnvConfigBody(BaseModel):
 
 @app.put("/api/env-config")
 async def update_env_config(body: EnvConfigBody) -> JSONResponse:
-    """Write updated .env fields to disk. Skips masked (***) sensitive values."""
-    ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if not ENV_PATH.exists():
-        ENV_PATH.touch()
+    """Write updated configuration fields.
 
-    for key, value in body.values.items():
-        if key not in _ENV_FIELDS:
-            continue
-        if key in _SENSITIVE_FIELDS and value == "***":
-            continue
-        dotenv_set_key(str(ENV_PATH), key, value)
+    In local mode, writes to ~/.matcreator/config.yaml.
+    In server mode, writes to agents/MatCreator/.env as before.
+    """
+    mode = os.environ.get("MATCREATOR_MODE", "local")
+
+    if mode == "local":
+        from matcreator.config import set_config_value
+        for key, value in body.values.items():
+            if key not in _ENV_FIELDS:
+                continue
+            yaml_key = ENV_TO_YAML.get(key)
+            if yaml_key is None:
+                continue
+            sensitive = yaml_key in SENSITIVE_YAML_KEYS
+            if sensitive and value == "***":
+                continue
+            set_config_value(yaml_key, value)
+            if value:
+                os.environ[key] = value
+            else:
+                os.environ.pop(key, None)
+    else:
+        ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
+        if not ENV_PATH.exists():
+            ENV_PATH.touch()
+        for key, value in body.values.items():
+            if key not in _ENV_FIELDS:
+                continue
+            if key in _SENSITIVE_FIELDS and value == "***":
+                continue
+            dotenv_set_key(str(ENV_PATH), key, value)
+            if value:
+                os.environ[key] = value
+            else:
+                os.environ.pop(key, None)
 
     return JSONResponse({"status": "ok"})
 
 
 @app.post("/api/restart-backend")
-async def restart_backend() -> JSONResponse:
-    """Kill the ADK API server on port 8000 and relaunch it."""
+async def restart_backend(user_id: str = Query(default="")) -> JSONResponse:
+    """Restart the ADK backend.
+
+    In server mode: restart the user's worker container.
+    In local mode: kill and relaunch the local ADK process on port 8000.
+    """
     global _adk_process
+
+    if _MATCREATOR_MODE == "server":
+        if not user_id:
+            raise HTTPException(status_code=400, detail="user_id required in server mode")
+        try:
+            import docker as _docker
+            dc = _get_docker()
+            name = _worker_container_name(user_id)
+            try:
+                c = dc.containers.get(name)
+                c.restart(timeout=15)
+            except _docker.errors.NotFound:
+                port = await asyncio.to_thread(ensure_worker_running, user_id)
+                return JSONResponse({"status": "created", "user_id": user_id, "port": port})
+            port = _worker_registry.get(user_id, None)
+            return JSONResponse({"status": "restarting", "user_id": user_id, "port": port})
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
 
     _kill_port(8000)
     await asyncio.sleep(1.5)
@@ -961,9 +1470,20 @@ async def restart_backend() -> JSONResponse:
 
 
 @app.get("/api/backend-status")
-async def get_backend_status() -> JSONResponse:
-    """Check whether the ADK API server on port 8000 is reachable."""
-    return JSONResponse({"ready": _is_port_open(8000)})
+async def get_backend_status(user_id: str = Query(default="")) -> JSONResponse:
+    """Check whether the ADK backend is reachable.
+
+    In server mode: checks the user's worker container port.
+    In local mode: checks localhost:8000.
+    """
+    if _MATCREATOR_MODE == "server" and user_id:
+        with _worker_registry_lock:
+            port = _worker_registry.get(user_id)
+        if port is None:
+            return JSONResponse({"ready": False})
+        return JSONResponse({"ready": _is_port_open("127.0.0.1", port)})
+
+    return JSONResponse({"ready": _is_port_open(port=_ADK_LOCAL_PORT)})
 
 
 # Serve built frontend in production
@@ -974,4 +1494,5 @@ if _dist.exists():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8001)
+    host = "0.0.0.0" if _MATCREATOR_MODE == "server" else "127.0.0.1"
+    uvicorn.run(app, host=host, port=8001)

@@ -25,7 +25,7 @@ _PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 def _import_check(module_expr: str, workspace: str) -> subprocess.CompletedProcess:
     """Run ``import <module_expr>`` in a subprocess with a temp workspace.
 
-    PYTHONPATH is extended with the project root so that ``agents.MatCreator``
+    PYTHONPATH is extended with the project root so that ``matcreator``
     is discoverable without requiring an editable install.
     """
     existing = os.environ.get("PYTHONPATH", "")
@@ -64,35 +64,35 @@ class TestMatCreatorImports(unittest.TestCase):
     # ── Individual sub-modules ────────────────────────────────────────────────
 
     def test_constants(self):
-        self._assertImportable("agents.MatCreator.constants")
+        self._assertImportable("matcreator.constants")
 
     def test_workspace(self):
-        self._assertImportable("agents.MatCreator.workspace")
+        self._assertImportable("matcreator.workspace")
 
     def test_guide(self):
-        self._assertImportable("agents.MatCreator.guide")
+        self._assertImportable("matcreator.guide")
 
     def test_skill(self):
-        self._assertImportable("agents.MatCreator.skill")
+        self._assertImportable("matcreator.skill")
 
     def test_orchestrator(self):
-        self._assertImportable("agents.MatCreator.agents.orchestrator.agent")
+        self._assertImportable("matcreator.agents.orchestrator.agent")
 
     def test_thinking_agent(self):
-        self._assertImportable("agents.MatCreator.agents.thinking_agent")
+        self._assertImportable("matcreator.agents.thinking_agent")
 
     def test_execution_agent(self):
-        self._assertImportable("agents.MatCreator.agents.execution_agent")
+        self._assertImportable("matcreator.agents.execution_agent")
 
     def test_tester_agent(self):
-        self._assertImportable("agents.MatCreator.agents.tester_agent")
+        self._assertImportable("matcreator.agents.tester_agent")
 
     # ── Top-level package ─────────────────────────────────────────────────────
 
     def test_top_level_exports_app(self):
-        """agents.MatCreator must be importable and export `app`."""
+        """matcreator must be importable and export `app`."""
         result = _import_check(
-            "agents.MatCreator; from agents.MatCreator import app",
+            "matcreator; from matcreator import app",
             self.workspace,
         )
         self.assertEqual(

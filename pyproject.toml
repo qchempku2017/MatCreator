@@ -26,7 +26,7 @@ dependencies = [
     "mp-api",
     "bcrypt>=4.0.0",
     "matcraft-kit",
-    "know-do-graph>=0.1.6"
+    "know-do-graph>=0.1.8"
 ]
 
 [build-system]
@@ -35,6 +35,18 @@ build-backend = "setuptools.build_meta"
 
 [project.scripts]
 matcreator = "matcreator.scripts.start_agent:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"matcreator" = [
+    "skills/**/*.md",
+    "skills/**/*.yaml",
+    "knowledge/MEMORY.md",
+    "agents/subagent.yaml",
+    "guides/*.md",
+]
 
 [tool.semantic_release]
 version_toml = ["pyproject.toml:project.version"]
