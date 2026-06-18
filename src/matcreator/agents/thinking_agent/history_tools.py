@@ -74,7 +74,8 @@ def read_execution_trajectory(
         }
 
     total = len(entries)
-    if last_n_steps is not None and last_n_steps > 0:
+    if last_n_steps is not None and int(last_n_steps) > 0:
+        last_n_steps = int(last_n_steps)
         entries = entries[-last_n_steps:]
 
     return {

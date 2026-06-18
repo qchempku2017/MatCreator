@@ -190,7 +190,7 @@ def test_unified_store_and_memgraph_migration(tmp_path: Path) -> None:
 
 
 def test_synthesizer_distills_repeated_success(tmp_path: Path, monkeypatch) -> None:
-    from agents.MatCreator.knowledge import synthesizer
+    from matcreator.knowledge import synthesizer
 
     graph = KnowDoGraph(tmp_path / "know-do.db", memory_dir=tmp_path / "memory")
     for index in range(3):

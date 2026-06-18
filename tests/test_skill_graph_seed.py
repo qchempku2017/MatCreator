@@ -5,8 +5,8 @@ from pathlib import Path
 from google.adk.skills import load_skill_from_dir
 from know_do_graph import KnowDoGraph
 
-from agents.MatCreator import guide, skill
-from agents.MatCreator.knowledge import query
+from matcreator import guide, skill
+from matcreator.knowledge import query
 
 
 def _write_skill(skill_dir: Path) -> None:
