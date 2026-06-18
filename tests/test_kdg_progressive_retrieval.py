@@ -9,7 +9,7 @@ from know_do_graph import (
     VerificationStatus,
 )
 
-from agents.MatCreator.knowledge import query, review
+from matcreator.knowledge import query, review
 
 
 def _add(

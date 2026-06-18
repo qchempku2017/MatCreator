@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from agents.MatCreator import constants
-from agents.MatCreator.knowledge import migrate
-from agents.MatCreator.knowledge import query
+from matcreator import constants
+from matcreator.knowledge import migrate
+from matcreator.knowledge import query
 
 
 def test_default_kdg_db_path_is_used_when_env_is_missing(monkeypatch) -> None:
