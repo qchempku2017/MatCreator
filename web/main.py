@@ -18,15 +18,19 @@ The vite dev server proxies /api/* here and /run_sse + /apps/* to the ADK server
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import json
 import os
+import pty
 import re
 import shutil
 import signal
 import socket
 import sqlite3
+import struct
 import subprocess
 import sys
+import termios
 import threading
 import time
 from pathlib import Path
@@ -38,7 +42,7 @@ import yaml
 
 from dotenv import dotenv_values
 from dotenv import set_key as dotenv_set_key
-from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -182,6 +186,8 @@ _WORKER_IDLE_TIMEOUT_SECONDS = int(os.environ.get("MATCREATOR_WORKER_IDLE_TIMEOU
 _WORKER_MEM_LIMIT = os.environ.get("MATCREATOR_WORKER_MEM_LIMIT", "")
 _WORKER_CPUS = os.environ.get("MATCREATOR_WORKER_CPUS", "")
 _WORKER_PIDS_LIMIT = os.environ.get("MATCREATOR_WORKER_PIDS_LIMIT", "")
+_WORKSPACE_CLI_TIMEOUT_SECONDS = int(os.environ.get("MATCREATOR_WORKSPACE_CLI_TIMEOUT_SECONDS", "30"))
+_WORKSPACE_CLI_OUTPUT_LIMIT = int(os.environ.get("MATCREATOR_WORKSPACE_CLI_OUTPUT_LIMIT", "20000"))
 
 _worker_registry: dict[str, str] = {}   # user_id → base URL
 _worker_ports: dict[str, int] = {}      # user_id → host port (host-port connect mode)
@@ -838,6 +844,314 @@ def _resolve_readable_file_path(path: str, session_id: str = "") -> Path:
     return resolved
 
 
+def _normalize_cli_cwd(cwd: str) -> Path:
+    raw = (cwd or ".").strip()
+    if raw in {"", "~"}:
+        raw = "."
+    if raw.startswith("~/"):
+        raw = raw[2:]
+    path = Path(raw)
+    if path.is_absolute():
+        raise HTTPException(status_code=403, detail="CLI cwd must be workspace-relative")
+
+    root = Path("/")
+    normalized = (root / path).resolve().relative_to(root)
+    return normalized
+
+
+def _cli_script(command: str) -> str:
+    return (
+        "exec 2>&1\n"
+        "trap 's=$?; printf \"\\n__MATCREATOR_CWD__%s\\n__MATCREATOR_STATUS__%s\\n\" \"$PWD\" \"$s\"' EXIT\n"
+        f"{command}\n"
+    )
+
+
+def _parse_cli_output(raw_output: str, workspace_root: Path | str) -> dict:
+    cwd_marker = "\n__MATCREATOR_CWD__"
+    status_marker = "\n__MATCREATOR_STATUS__"
+    output = raw_output
+    exit_code = 0
+    next_cwd = "."
+
+    cwd_idx = raw_output.rfind(cwd_marker)
+    status_idx = raw_output.rfind(status_marker)
+    if cwd_idx >= 0 and status_idx > cwd_idx:
+        output = raw_output[:cwd_idx]
+        cwd_abs = raw_output[cwd_idx + len(cwd_marker):status_idx].strip()
+        status_raw = raw_output[status_idx + len(status_marker):].strip().splitlines()[0:1]
+        if status_raw:
+            try:
+                exit_code = int(status_raw[0])
+            except ValueError:
+                exit_code = 1
+        try:
+            rel = Path(cwd_abs).resolve().relative_to(Path(workspace_root).resolve())
+            next_cwd = rel.as_posix() or "."
+        except (OSError, ValueError):
+            next_cwd = "."
+
+    if len(output) > _WORKSPACE_CLI_OUTPUT_LIMIT:
+        output = output[:_WORKSPACE_CLI_OUTPUT_LIMIT] + "\n... [truncated]"
+    return {"output": output, "exit_code": exit_code, "cwd": next_cwd}
+
+
+async def _run_local_workspace_cli(command: str, cwd: str) -> dict:
+    rel_cwd = _normalize_cli_cwd(cwd)
+    workspace = get_workspace_root().resolve()
+    run_cwd = (workspace / rel_cwd).resolve()
+    if not run_cwd.is_relative_to(workspace):
+        raise HTTPException(status_code=403, detail="CLI cwd is outside workspace")
+    run_cwd.mkdir(parents=True, exist_ok=True)
+
+    proc = await asyncio.create_subprocess_exec(
+        "bash",
+        "-lc",
+        _cli_script(command),
+        cwd=str(run_cwd),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    try:
+        stdout, _ = await asyncio.wait_for(
+            proc.communicate(), timeout=_WORKSPACE_CLI_TIMEOUT_SECONDS
+        )
+    except asyncio.TimeoutError:
+        proc.kill()
+        stdout, _ = await proc.communicate()
+        output = stdout.decode("utf-8", errors="replace")
+        return {
+            "output": output + f"\n[Timeout after {_WORKSPACE_CLI_TIMEOUT_SECONDS}s]",
+            "exit_code": 124,
+            "cwd": rel_cwd.as_posix() or ".",
+        }
+    return _parse_cli_output(stdout.decode("utf-8", errors="replace"), workspace)
+
+
+def _run_worker_workspace_cli(user_id: str, command: str, cwd: str) -> dict:
+    _safe_user_dir_name(user_id)
+    rel_cwd = _normalize_cli_cwd(cwd)
+    ensure_worker_running(user_id)
+
+    dc = _get_docker()
+    container = dc.containers.get(_worker_container_name(user_id))
+    workdir = (_WORKER_WORKSPACE_ROOT / rel_cwd).as_posix()
+    container.exec_run(["mkdir", "-p", workdir])
+
+    exec_result = container.exec_run(
+        [
+            "timeout",
+            str(_WORKSPACE_CLI_TIMEOUT_SECONDS),
+            "bash",
+            "-lc",
+            _cli_script(command),
+        ],
+        workdir=workdir,
+        stdout=True,
+        stderr=True,
+        demux=False,
+    )
+    raw = exec_result.output.decode("utf-8", errors="replace")
+    if exec_result.exit_code == 124:
+        return {
+            "output": raw + f"\n[Timeout after {_WORKSPACE_CLI_TIMEOUT_SECONDS}s]",
+            "exit_code": 124,
+            "cwd": rel_cwd.as_posix() or ".",
+        }
+    return _parse_cli_output(raw, _WORKER_WORKSPACE_ROOT)
+
+
+def _complete_workspace_paths(workspace_root: Path, cwd: str, token: str) -> dict:
+    workspace = workspace_root.resolve()
+    rel_cwd = _normalize_cli_cwd(cwd)
+    raw_token = (token or "").strip()
+    if raw_token.startswith("~/"):
+        raw_token = raw_token[2:]
+    if Path(raw_token).is_absolute():
+        raise HTTPException(status_code=403, detail="Completion path must be workspace-relative")
+
+    if "/" in raw_token:
+        parent_raw, prefix = raw_token.rsplit("/", 1)
+        parent_rel = _normalize_cli_cwd(parent_raw or ".")
+        replacement_prefix = "" if parent_raw in {"", "."} else f"{parent_raw}/"
+    else:
+        parent_rel = rel_cwd
+        prefix = raw_token
+        replacement_prefix = ""
+
+    base_dir = (workspace / parent_rel).resolve()
+    if not base_dir.is_relative_to(workspace):
+        raise HTTPException(status_code=403, detail="Completion path is outside workspace")
+    if not base_dir.is_dir():
+        return {"matches": []}
+
+    matches = []
+    try:
+        entries = sorted(base_dir.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to list workspace path: {exc}")
+
+    for entry in entries:
+        if not entry.name.startswith(prefix):
+            continue
+        suffix = "/" if entry.is_dir() else ""
+        matches.append({
+            "name": entry.name + suffix,
+            "replacement": replacement_prefix + entry.name + suffix,
+            "type": "dir" if entry.is_dir() else "file",
+        })
+
+    return {"matches": matches[:200]}
+
+
+def _set_pty_size(fd: int, rows: int, cols: int) -> None:
+    rows = max(1, min(int(rows or 24), 200))
+    cols = max(1, min(int(cols or 80), 400))
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+
+
+async def _send_terminal_output(websocket: WebSocket, data: bytes) -> None:
+    await websocket.send_text(json.dumps({
+        "type": "output",
+        "data": data.decode("utf-8", errors="replace"),
+    }))
+
+
+async def _local_terminal_session(websocket: WebSocket) -> None:
+    workspace = get_workspace_root().resolve()
+    workspace.mkdir(parents=True, exist_ok=True)
+
+    master_fd, slave_fd = pty.openpty()
+    _set_pty_size(master_fd, 24, 80)
+    env = {
+        **os.environ,
+        "TERM": "xterm-256color",
+        "COLORTERM": "truecolor",
+        "MATCLAW_WORKSPACE": str(workspace),
+        "MATCLAW_SESSION_DIR": str(workspace),
+    }
+    proc = subprocess.Popen(
+        ["bash", "-l"],
+        cwd=str(workspace),
+        stdin=slave_fd,
+        stdout=slave_fd,
+        stderr=slave_fd,
+        start_new_session=True,
+        env=env,
+    )
+    os.close(slave_fd)
+    loop = asyncio.get_running_loop()
+
+    async def read_loop() -> None:
+        while True:
+            try:
+                data = await loop.run_in_executor(None, os.read, master_fd, 4096)
+            except OSError:
+                break
+            if not data:
+                break
+            try:
+                await _send_terminal_output(websocket, data)
+            except Exception:
+                break
+
+    reader = asyncio.create_task(read_loop())
+    try:
+        while True:
+            message = json.loads(await websocket.receive_text())
+            msg_type = message.get("type")
+            if msg_type == "input":
+                os.write(master_fd, str(message.get("data", "")).encode())
+            elif msg_type == "resize":
+                _set_pty_size(master_fd, int(message.get("rows", 24)), int(message.get("cols", 80)))
+    except WebSocketDisconnect:
+        pass
+    finally:
+        reader.cancel()
+        try:
+            os.close(master_fd)
+        except OSError:
+            pass
+        if proc.poll() is None:
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+
+def _docker_exec_socket(user_id: str):
+    ensure_worker_running(user_id)
+    dc = _get_docker()
+    container = dc.containers.get(_worker_container_name(user_id))
+    workspace = _WORKER_WORKSPACE_ROOT.as_posix()
+    container.exec_run(["mkdir", "-p", workspace])
+    exec_id = dc.api.exec_create(
+        container.id,
+        ["bash", "-l"],
+        stdin=True,
+        stdout=True,
+        stderr=True,
+        tty=True,
+        workdir=workspace,
+        environment={
+            "TERM": "xterm-256color",
+            "COLORTERM": "truecolor",
+            "MATCLAW_WORKSPACE": workspace,
+            "MATCLAW_SESSION_DIR": workspace,
+        },
+    )["Id"]
+    sock = dc.api.exec_start(exec_id, tty=True, socket=True)
+    raw_sock = getattr(sock, "_sock", sock)
+    raw_sock.settimeout(None)
+    return dc, exec_id, sock, raw_sock
+
+
+async def _worker_terminal_session(websocket: WebSocket, user_id: str) -> None:
+    _safe_user_dir_name(user_id)
+    dc, exec_id, sock, raw_sock = await asyncio.to_thread(_docker_exec_socket, user_id)
+    loop = asyncio.get_running_loop()
+
+    async def read_loop() -> None:
+        while True:
+            try:
+                data = await loop.run_in_executor(None, raw_sock.recv, 4096)
+            except OSError:
+                break
+            if not data:
+                break
+            try:
+                await _send_terminal_output(websocket, data)
+            except Exception:
+                break
+
+    reader = asyncio.create_task(read_loop())
+    try:
+        while True:
+            message = json.loads(await websocket.receive_text())
+            msg_type = message.get("type")
+            if msg_type == "input":
+                await loop.run_in_executor(None, raw_sock.send, str(message.get("data", "")).encode())
+            elif msg_type == "resize":
+                rows = max(1, min(int(message.get("rows", 24)), 200))
+                cols = max(1, min(int(message.get("cols", 80)), 400))
+                await asyncio.to_thread(dc.api.exec_resize, exec_id, height=rows, width=cols)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        reader.cancel()
+        try:
+            sock.close()
+        except Exception:
+            pass
+
+
 @app.get("/api/health")
 async def health_check():
     mode = os.environ.get("MATCREATOR_MODE", "local")
@@ -869,6 +1183,18 @@ class SetPasswordBody(BaseModel):
 
 class LogoutBody(BaseModel):
     user_id: str
+
+
+class WorkspaceCliBody(BaseModel):
+    command: str
+    cwd: str = "."
+    user_id: str | None = None
+
+
+class WorkspaceCompleteBody(BaseModel):
+    token: str = ""
+    cwd: str = "."
+    user_id: str | None = None
 
 
 class KnowledgeReviewBody(BaseModel):
@@ -1202,6 +1528,65 @@ async def get_agent_graph(session_id: str) -> JSONResponse:
     if not data:
         return JSONResponse({"session_id": session_id, "nodes": {}, "edges": [], "updated_at": None})
     return JSONResponse(data)
+
+
+@app.post("/api/workspace/cli")
+async def run_workspace_cli(body: WorkspaceCliBody) -> JSONResponse:
+    command = body.command.strip()
+    if not command:
+        raise HTTPException(status_code=422, detail="command cannot be empty")
+
+    if _MATCREATOR_MODE == "server":
+        if not body.user_id:
+            raise HTTPException(status_code=400, detail="user_id required in server mode")
+        result = await asyncio.to_thread(
+            _run_worker_workspace_cli,
+            body.user_id,
+            command,
+            body.cwd,
+        )
+    else:
+        result = await _run_local_workspace_cli(command, body.cwd)
+    return JSONResponse(result)
+
+
+@app.post("/api/workspace/complete")
+async def complete_workspace_cli(body: WorkspaceCompleteBody) -> JSONResponse:
+    if _MATCREATOR_MODE == "server":
+        if not body.user_id:
+            raise HTTPException(status_code=400, detail="user_id required in server mode")
+        workspace = _user_workspace_root(body.user_id)
+    else:
+        workspace = get_workspace_root()
+    workspace.mkdir(parents=True, exist_ok=True)
+    return JSONResponse(_complete_workspace_paths(workspace, body.cwd, body.token))
+
+
+@app.websocket("/api/workspace/terminal")
+async def workspace_terminal(websocket: WebSocket) -> None:
+    await websocket.accept()
+    try:
+        if _MATCREATOR_MODE == "server":
+            user_id = websocket.query_params.get("user_id", "")
+            if not user_id:
+                await websocket.send_text(json.dumps({
+                    "type": "output",
+                    "data": "user_id required in server mode\r\n",
+                }))
+                await websocket.close(code=1008)
+                return
+            await _worker_terminal_session(websocket, user_id)
+        else:
+            await _local_terminal_session(websocket)
+    except Exception as exc:
+        logger.exception("Workspace terminal failed")
+        try:
+            await websocket.send_text(json.dumps({
+                "type": "output",
+                "data": f"\r\n[terminal error] {exc}\r\n",
+            }))
+        except Exception:
+            pass
 
 
 @app.get("/api/workspace/files")

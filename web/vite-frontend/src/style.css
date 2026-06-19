@@ -304,6 +304,31 @@ body {
 .file-explorer-body { flex: 1; overflow-y: auto; padding: 10px 12px; }
 .files-col-toggle.is-active { border-color: var(--accent); color: var(--accent); }
 
+.workspace-cli-toggle.is-active,
+#workspace-cli-toggle.is-active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.workspace-cli {
+  margin: 0 12px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #030712;
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+.workspace-cli.hidden {
+  display: none;
+}
+.workspace-terminal {
+  height: 220px;
+  min-height: 120px;
+  max-height: 42vh;
+  padding: 6px;
+}
+.workspace-terminal .xterm { height: 100%; }
+.workspace-terminal .xterm-viewport { border-radius: 8px; }
+
 .detail-section {
   font-size: 13px;
   margin-top: 2px;

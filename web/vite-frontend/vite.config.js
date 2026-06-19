@@ -14,7 +14,10 @@ function stripOrigin(proxy) {
 export default defineConfig({
   server: {
     proxy: {
-      "/api": "http://localhost:8001",
+      "/api": {
+        target: "http://localhost:8001",
+        ws: true,
+      },
       "/run_sse": {
         target: "http://localhost:8001",
         changeOrigin: true,

@@ -31,6 +31,7 @@
           <span class="chip">Session: <span id="session-id">-</span></span>
           <span class="chip agent-mode-chip hidden" id="agent-mode-chip"></span>
           <button class="ghost" id="reset-session">New Session</button>
+          <button class="ghost" id="workspace-cli-toggle" title="Toggle workspace terminal">CLI</button>
           <button class="ghost" id="settings-btn" title="Settings">⚙</button>
           <button class="ghost files-col-toggle" id="files-col-toggle" title="Toggle session files panel" style="padding:0 10px;font-size:13px;">
             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"
@@ -184,6 +185,9 @@
               <button class="send-btn" id="send-btn" title="Send">➜</button>
             </div>
           </div>
+          <div class="workspace-cli hidden" id="workspace-cli">
+            <div class="workspace-terminal" id="workspace-terminal"></div>
+          </div>
 
           <!-- Floating execution plan graph popup -->
           <div class="plan-graph-popup hidden" id="plan-graph-popup">
@@ -257,7 +261,7 @@
     </div>
 
     <!-- Login overlay -->
-    <div id="login-modal" class="login-overlay">
+    <div id="login-modal" class="login-overlay hidden">
       <div class="login-card">
         <div class="brand-title" style="font-size:1.4rem">MatCreator</div>
         <!-- Login view -->

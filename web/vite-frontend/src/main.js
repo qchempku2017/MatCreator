@@ -1,5 +1,8 @@
 import { marked } from "marked";
 import { Network, DataSet } from "vis-network/standalone";
+import { Terminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
+import "@xterm/xterm/css/xterm.css";
 import * as $3Dmol from "3dmol";
 import "./style.css";
 
@@ -40,6 +43,7 @@ const uploadStatus = document.getElementById("upload-status");
 const sessionIdEl = document.getElementById("session-id");
 const sessionListEl = document.getElementById("session-list");
 const resetBtn = document.getElementById("reset-session");
+const workspaceCliToggle = document.getElementById("workspace-cli-toggle");
 const refreshSessionsBtn = document.getElementById("refresh-sessions");
 const graphViewport = document.getElementById("graph-viewport");
 const graphDetail = document.getElementById("graph-detail");
@@ -84,7 +88,12 @@ const filesColToggleBtn = document.getElementById("files-col-toggle");
 const knowledgeReviewBanner = document.getElementById("knowledge-review-banner");
 const knowledgeReviewText = document.getElementById("knowledge-review-text");
 const knowledgeReviewSpinner = document.getElementById("knowledge-review-spinner");
+const workspaceCli = document.getElementById("workspace-cli");
+const workspaceTerminalEl = document.getElementById("workspace-terminal");
 let knowledgeReviewPoll = null;
+let workspaceTerminal = null;
+let workspaceTerminalFit = null;
+let workspaceTerminalSocket = null;
 
 function autoResizeTextInput() {
   if (!textInput) return;
@@ -1155,6 +1164,10 @@ function _isValidIdentity(s) {
 }
 
 function showLoginModal() {
+  if (state.deploymentMode !== "server") {
+    hideLoginModal();
+    return;
+  }
   loginModal.classList.remove("hidden");
   loginView.classList.remove("hidden");
   registerView.classList.add("hidden");
@@ -1947,6 +1960,108 @@ function renderSessionFilesTree(files) {
   const root = _buildFileTree(files, prefix);
   _renderTreeNode(root, ul, 0);
 }
+
+function setWorkspaceCliOpen(open) {
+  workspaceCli?.classList.toggle("hidden", !open);
+  workspaceCliToggle?.classList.toggle("is-active", open);
+  workspaceCliToggle?.setAttribute("aria-expanded", String(open));
+  if (open) {
+    startWorkspaceTerminal();
+  } else {
+    stopWorkspaceTerminal();
+  }
+}
+
+function terminalWebSocketUrl() {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const params = new URLSearchParams();
+  if (state.deploymentMode === "server" && state.userId) params.set("user_id", state.userId);
+  const qs = params.toString();
+  return `${protocol}//${window.location.host}/api/workspace/terminal${qs ? `?${qs}` : ""}`;
+}
+
+function resizeWorkspaceTerminal() {
+  if (!workspaceTerminal || !workspaceTerminalFit || !workspaceTerminalSocket) return;
+  try {
+    workspaceTerminalFit.fit();
+    if (workspaceTerminalSocket.readyState === WebSocket.OPEN) {
+      workspaceTerminalSocket.send(JSON.stringify({
+        type: "resize",
+        rows: workspaceTerminal.rows,
+        cols: workspaceTerminal.cols,
+      }));
+    }
+  } catch (_) { /* terminal may not be visible yet */ }
+}
+
+function startWorkspaceTerminal() {
+  if (!workspaceTerminalEl) return;
+  if (workspaceTerminalSocket && workspaceTerminalSocket.readyState === WebSocket.OPEN) {
+    workspaceTerminal?.focus();
+    resizeWorkspaceTerminal();
+    return;
+  }
+  workspaceTerminalEl.innerHTML = "";
+  workspaceTerminal = new Terminal({
+    cursorBlink: true,
+    convertEol: true,
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
+    fontSize: 12,
+    theme: {
+      background: "#030712",
+      foreground: "#d1fae5",
+      cursor: "#7dd3fc",
+      selectionBackground: "#1e40af88",
+    },
+  });
+  workspaceTerminalFit = new FitAddon();
+  workspaceTerminal.loadAddon(workspaceTerminalFit);
+  workspaceTerminal.open(workspaceTerminalEl);
+  workspaceTerminal.write("\r\nStarting workspace terminal...\r\n");
+  workspaceTerminalFit.fit();
+  workspaceTerminal.focus();
+
+  workspaceTerminalSocket = new WebSocket(terminalWebSocketUrl());
+  workspaceTerminalSocket.addEventListener("open", () => {
+    resizeWorkspaceTerminal();
+  });
+  workspaceTerminalSocket.addEventListener("message", (event) => {
+    try {
+      const message = JSON.parse(event.data);
+      if (message.type === "output") workspaceTerminal.write(message.data || "");
+    } catch (_) {
+      workspaceTerminal.write(String(event.data || ""));
+    }
+  });
+  workspaceTerminalSocket.addEventListener("close", () => {
+    workspaceTerminal?.write("\r\n[terminal closed]\r\n");
+  });
+  workspaceTerminalSocket.addEventListener("error", () => {
+    workspaceTerminal?.write("\r\n[terminal connection error]\r\n");
+  });
+  workspaceTerminal.onData((data) => {
+    if (workspaceTerminalSocket?.readyState === WebSocket.OPEN) {
+      workspaceTerminalSocket.send(JSON.stringify({ type: "input", data }));
+    }
+  });
+}
+
+function stopWorkspaceTerminal() {
+  if (workspaceTerminalSocket) {
+    workspaceTerminalSocket.close();
+    workspaceTerminalSocket = null;
+  }
+  workspaceTerminal?.dispose();
+  workspaceTerminal = null;
+  workspaceTerminalFit = null;
+  if (workspaceTerminalEl) workspaceTerminalEl.innerHTML = "";
+}
+
+workspaceCliToggle?.addEventListener("click", () => {
+  setWorkspaceCliOpen(workspaceCli?.classList.contains("hidden"));
+});
+
+window.addEventListener("resize", resizeWorkspaceTerminal);
 
 async function refreshSessionFiles() {
   if (!state.sessionId || !state.sessionReady) return;
