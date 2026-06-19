@@ -8,11 +8,15 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 _script_dir = Path(__file__).parent.resolve()
-_MATCREATOR_DIR = Path.home() / ".matcreator"
+_MATCREATOR_DIR = Path(os.environ.get("MATCREATOR_HOME", str(Path.home() / ".matcreator"))).expanduser()
 _KDG_EMBED_ALIASES = {
     "KDG_EMBED_MODEL": "EMBEDDING_MODEL",
     "KDG_EMBED_API_KEY": "LLM_API_KEY",
     "KDG_EMBED_BASE_URL": "LLM_BASE_URL",
+}
+_LEGACY_ENV_ALIASES = {
+    "LLM_API_KEY": "MINIMAX_API_KEY",
+    "LLM_BASE_URL": "MINIMAX_API_BASE",
 }
 
 # Priority: explicit env vars (highest) > config.yaml > .env (lowest)
@@ -52,6 +56,10 @@ _yaml_to_env: dict[str, str | None] = {
 for _env_key, _yaml_val in _yaml_to_env.items():
     if _yaml_val and _env_key not in _pre_env:
         os.environ[_env_key] = _yaml_val
+
+for _env_key, _legacy_key in _LEGACY_ENV_ALIASES.items():
+    if not os.environ.get(_env_key) and os.environ.get(_legacy_key):
+        os.environ[_env_key] = os.environ[_legacy_key]
 
 
 def _normalize_kdg_embedding_env() -> None:

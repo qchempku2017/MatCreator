@@ -151,6 +151,31 @@ Logs are written to `logs/{api-server,web-main,vite}.log`. Press `Ctrl+C` to sto
 
 ![The web UI for MatCreator](docs/images/agent_plot.png)
 
+#### Server mode: multi-user Docker deployment
+
+Server mode is intended for a shared group server. It runs a control plane behind
+nginx and starts one isolated Docker worker per registered user. Each worker sees
+its own `/root/.matcreator` directory, backed by persistent host data under
+`server-data/users/<user_id>/.matcreator`. Local/single-user mode is unchanged:
+it does not require auth or Docker and continues to use `~/.matcreator`.
+
+```bash
+# Build the MatCreator image
+docker compose build
+
+# Choose where user data should persist on the host
+export MATCREATOR_HOST_DATA_ROOT="$(pwd)/server-data"
+
+# Start nginx + control plane; workers are created lazily on login/register
+docker compose -f docker-compose.server.yml up -d
+```
+
+Open `http://localhost`, register a user, and log in. Logging out stops that
+user's worker container; idle workers are also stopped after
+`MATCREATOR_WORKER_IDLE_TIMEOUT_SECONDS` seconds. See
+[`deploy/server-mode.md`](deploy/server-mode.md) for the full setup guide,
+resource-control options, data layout, and troubleshooting commands.
+
 #### Non-interactive CLI mode
 
 Run the agent on a single prompt without starting any server:

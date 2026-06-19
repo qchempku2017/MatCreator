@@ -17,6 +17,7 @@ const state = {
   displayName: localStorage.getItem("mat_displayName") || localStorage.getItem("mat_userId") || "",
   activeSessionUserId: localStorage.getItem("mat_userId") || "",
   isAdmin: false,
+  deploymentMode: localStorage.getItem("mat_deploymentMode") || "local",
   sessionReady: false,
   structure3dViewer: null,
   currentUploads: [],
@@ -1167,7 +1168,18 @@ function showLoginModal() {
   loginInput.focus();
 }
 
-function logout() {
+async function logout() {
+  const userId = state.userId;
+  const deploymentMode = state.deploymentMode;
+  if (deploymentMode === "server" && userId) {
+    try {
+      await fetch("/api/auth/logout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: userId }),
+      });
+    } catch (_) { /* best-effort worker shutdown */ }
+  }
   state.userId = "";
   state.displayName = "";
   state.activeSessionUserId = "";
@@ -1176,6 +1188,7 @@ function logout() {
   localStorage.removeItem("mat_userId");
   localStorage.removeItem("mat_displayName");
   localStorage.removeItem("mat_sessionId");
+  localStorage.removeItem("mat_deploymentMode");
   userDisplay.textContent = "—";
   chatArea.innerHTML = "";
   sessionListEl.innerHTML = '<li class="empty">Sign in to see sessions</li>';
@@ -1229,6 +1242,7 @@ function _applySession(result) {
   state.sessionReady = false;
   state.isAdmin = Boolean(result.is_admin);
   loginUuidDisplay.textContent = `UUID: ${result.user_id}`;
+  localStorage.setItem("mat_deploymentMode", state.deploymentMode);
   localStorage.setItem("mat_userId", result.user_id);
   localStorage.setItem("mat_displayName", result.display_name);
   localStorage.setItem("mat_sessionId", state.sessionId);
@@ -1341,6 +1355,7 @@ settingsLogoutBtn.addEventListener("click", () => logout());
 
 const savePasswordBtn = document.getElementById("settings-save-password-btn");
 const passwordMsg = document.getElementById("settings-password-msg");
+const settingsPasswordSection = savePasswordBtn?.parentElement;
 
 async function savePassword() {
   const oldPw = document.getElementById("settings-current-password").value || null;
@@ -1373,7 +1388,36 @@ async function savePassword() {
 
 savePasswordBtn.addEventListener("click", savePassword);
 
-// On load: in local mode auto-login as "user"; in server mode show login modal.
+function clearStoredIdentity() {
+  localStorage.removeItem("mat_userId");
+  localStorage.removeItem("mat_displayName");
+  localStorage.removeItem("mat_sessionId");
+}
+
+function applyLocalIdentity(resetSession = false) {
+  state.deploymentMode = "local";
+  state.userId = "user";
+  state.displayName = "user";
+  state.activeSessionUserId = "user";
+  state.isAdmin = false;
+  state.sessionReady = false;
+  if (resetSession) {
+    state.sessionId = `session-${Math.floor(Date.now() / 1000)}`;
+    localStorage.setItem("mat_sessionId", state.sessionId);
+  }
+  localStorage.setItem("mat_deploymentMode", "local");
+  localStorage.setItem("mat_userId", "user");
+  localStorage.setItem("mat_displayName", "user");
+}
+
+function hideLocalAuthControls() {
+  if (editUserBtn) editUserBtn.style.display = "none";
+  if (logoutBtn) logoutBtn.style.display = "none";
+  if (settingsLogoutBtn) settingsLogoutBtn.style.display = "none";
+  if (settingsPasswordSection) settingsPasswordSection.style.display = "none";
+}
+
+// On load: in local mode force passwordless "user"; in server mode require server auth.
 (async () => {
   let serverMode = "local";
   try {
@@ -1384,29 +1428,18 @@ savePasswordBtn.addEventListener("click", savePassword);
     }
   } catch (_) { /* server not up yet — assume local */ }
 
+  state.deploymentMode = serverMode === "server" ? "server" : "local";
+  const storedMode = localStorage.getItem("mat_deploymentMode") || "";
   const storedId = localStorage.getItem("mat_userId") || "";
 
-  if (serverMode === "local") {
-    // Auto-login as the legacy "user" identity — no password required.
-    if (!storedId || storedId === "user") {
-      try {
-        const resp = await fetch("/api/auth/login", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ display_name: "user" }),
-        });
-        if (resp.ok) {
-          const result = await resp.json();
-          _applySession(result);
-          localStorage.setItem("mat_userId", result.user_id);
-          localStorage.setItem("mat_displayName", result.display_name);
-        }
-      } catch (_) { /* ignore */ }
-    }
-    // Hide auth UI elements that are irrelevant in local mode.
-    if (editUserBtn) editUserBtn.style.display = "none";
-    if (logoutBtn) logoutBtn.style.display = "none";
-    if (settingsLogoutBtn) settingsLogoutBtn.style.display = "none";
+  if (state.deploymentMode === "local") {
+    hideLocalAuthControls();
+    applyLocalIdentity(storedMode === "server" || (storedId && storedId !== "user"));
+    hideLoginModal();
+  } else if ((storedMode && storedMode !== "server") || (!storedMode && storedId === "user")) {
+    clearStoredIdentity();
+    showLoginModal();
+    return;
   } else if (!storedId) {
     showLoginModal();
     return;
@@ -3176,7 +3209,7 @@ async function saveSettings() {
       if (!res.ok) throw new Error(await res.text());
     }
 
-    if (username && username !== state.displayName) {
+    if (state.deploymentMode === "server" && username && username !== state.displayName) {
       closeSettingsModal();
       await applyLogin(username, null);
     }
@@ -3195,7 +3228,8 @@ async function _pollBackendReady(maxAttempts = 30, intervalMs = 2000) {
   for (let i = 0; i < maxAttempts; i++) {
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
     try {
-      const res = await fetch("/api/backend-status");
+      const userQuery = state.userId ? `?user_id=${encodeURIComponent(state.userId)}` : "";
+      const res = await fetch(`/api/backend-status${userQuery}`);
       if (res.ok) {
         const data = await res.json();
         if (data.ready) return;
@@ -3211,7 +3245,8 @@ async function restartBackend() {
   settingsRestartBtn.textContent = "Restarting…";
   settingsStatus.textContent = "Restarting backend…";
   try {
-    const res = await fetch("/api/restart-backend", { method: "POST" });
+    const userQuery = state.userId ? `?user_id=${encodeURIComponent(state.userId)}` : "";
+    const res = await fetch(`/api/restart-backend${userQuery}`, { method: "POST" });
     if (!res.ok) throw new Error(await res.text());
     await _pollBackendReady();
     settingsStatus.textContent = "Backend restarted ✓";

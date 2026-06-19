@@ -1,0 +1,109 @@
+# Server mode: multi-user deployment with per-user Docker worker containers.
+#
+# Each registered user gets a dedicated worker container that runs the ADK API
+# server and has its own isolated ~/.matcreator tree (session DB, knowledge
+# graph, workspace, memory, config).
+#
+# Admin session visibility: the control plane mounts the server data root and
+# reads users/<user_id>/.matcreator/.adk/session.db without requiring the worker
+# to be running. Workers mount only their own user directory read-write.
+#
+# Usage:
+#   export MATCREATOR_HOST_DATA_ROOT="$(pwd)/server-data"
+#   docker compose -f docker-compose.server.yml up -d
+#
+# Prerequisites:
+#   - Build the image first:  docker compose build
+#   - Set credentials in agents/MatCreator/.env (shared across all workers)
+
+x-worker-defaults: &worker-defaults
+  image: matcreator:latest
+  restart: unless-stopped
+  env_file:
+    - agents/MatCreator/.env
+  environment:
+    - MATCREATOR_MODE=server
+    - MATCREATOR_WORKER_CONNECT_MODE=network
+  networks:
+    - matcreator-net
+
+services:
+
+  # --------------------------------------------------------------------------
+  # Reverse proxy — routes browser traffic to the control plane
+  # --------------------------------------------------------------------------
+  proxy:
+    image: nginx:stable-alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./deploy/nginx.server.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - control-plane
+    networks:
+      - matcreator-net
+    restart: unless-stopped
+
+  # --------------------------------------------------------------------------
+  # Control plane — auth, session management, worker lifecycle, admin API
+  #
+  # Mounts the server data root so admin can query all users' session DBs.
+  # Mounts /var/run/docker.sock so it can spawn/stop worker containers.
+  # --------------------------------------------------------------------------
+  control-plane:
+    image: matcreator:latest
+    command: python web/main.py
+    environment:
+      - MATCREATOR_MODE=server
+      - MATCREATOR_DATA_ROOT=/data/matcreator
+      - MATCREATOR_HOME=/data/matcreator/control-plane/.matcreator
+      - MATCREATOR_HOST_DATA_ROOT=${MATCREATOR_HOST_DATA_ROOT:-${PWD}/server-data}
+      - MATCREATOR_WORKER_CONNECT_MODE=network
+      - MATCREATOR_WORKER_NETWORK=matcreator-net
+      # Worker resource controls. Empty CPU/memory values mean "Docker default".
+      - MATCREATOR_WORKER_IDLE_TIMEOUT_SECONDS=${MATCREATOR_WORKER_IDLE_TIMEOUT_SECONDS:-1800}
+      - MATCREATOR_WORKER_MEM_LIMIT=${MATCREATOR_WORKER_MEM_LIMIT:-}
+      - MATCREATOR_WORKER_CPUS=${MATCREATOR_WORKER_CPUS:-}
+      - MATCREATOR_WORKER_PIDS_LIMIT=${MATCREATOR_WORKER_PIDS_LIMIT:-}
+    env_file:
+      - agents/MatCreator/.env
+    volumes:
+      # Control-plane state plus read-only/admin view of user data.
+      - ${MATCREATOR_HOST_DATA_ROOT:-./server-data}:/data/matcreator
+      # Docker socket so control plane can manage worker containers
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./logs:/app/logs
+    ports:
+      - "8001:8001"
+    networks:
+      - matcreator-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # --------------------------------------------------------------------------
+  # Worker template (example for user "alice" — real workers are spawned
+  # dynamically by the control plane via the Docker API on first login).
+  #
+  # Each worker gets:
+  #   - /root/.matcreator mounted from
+  #     ${MATCREATOR_HOST_DATA_ROOT}/users/<user_id>/.matcreator
+  #   - No public host port by default; the control plane reaches it through
+  #     the matcreator-net Docker network.
+  # --------------------------------------------------------------------------
+  # worker-alice:
+  #   <<: *worker-defaults
+  #   command: matcreator api-server --host 0.0.0.0 --port 8000
+  #   volumes:
+  #     - ${MATCREATOR_HOST_DATA_ROOT}/users/alice/.matcreator:/root/.matcreator
+  #   environment:
+  #     - MATCREATOR_MODE=server
+  #     - MATCREATOR_USER_ID=alice
+
+networks:
+  matcreator-net:
+    name: matcreator-net
+    driver: bridge

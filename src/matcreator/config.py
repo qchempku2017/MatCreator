@@ -33,12 +33,14 @@ Supported sections:
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-_CONFIG_PATH = Path.home() / ".matcreator" / "config.yaml"
+_MATCREATOR_HOME = Path(os.environ.get("MATCREATOR_HOME", str(Path.home() / ".matcreator"))).expanduser()
+_CONFIG_PATH = _MATCREATOR_HOME / "config.yaml"
 
 # Mapping from config.yaml dotted keys to environment variable names.
 # Used by constants.py (loading) and CLI (set/get) and web API (env-config).

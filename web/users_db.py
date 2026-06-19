@@ -15,11 +15,18 @@ import re
 import sqlite3
 import time
 import uuid
+import os
 from pathlib import Path
 
 import bcrypt
 
-USERS_DB_PATH = Path(__file__).parent / "users.db"
+if os.environ.get("MATCREATOR_MODE") == "server":
+    matcreator_home = Path(os.environ.get("MATCREATOR_HOME", str(Path.home() / ".matcreator"))).expanduser()
+    USERS_DB_PATH = Path(
+        os.environ.get("MATCREATOR_USERS_DB", str(matcreator_home / "users.db"))
+    ).expanduser()
+else:
+    USERS_DB_PATH = Path(__file__).parent / "users.db"
 
 _UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
@@ -39,6 +46,7 @@ def _is_valid_identity(s: str) -> bool:
 
 
 def init_db() -> None:
+    USERS_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(USERS_DB_PATH) as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS users (

@@ -28,8 +28,10 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import List
+from urllib.parse import unquote
 
 import httpx
 import yaml
@@ -44,6 +46,18 @@ from pydantic import BaseModel
 # Allow importing users_db from the web/ directory
 ROOT = Path(__file__).parent.parent
 _WEB_DIR = Path(__file__).parent
+_MATCREATOR_MODE = os.environ.get("MATCREATOR_MODE", "local")
+_SERVER_DATA_ROOT = Path(
+    os.environ.get("MATCREATOR_DATA_ROOT", str(ROOT / "server-data"))
+).expanduser()
+_CONTROL_PLANE_HOME_ENV = Path(
+    os.environ.get(
+        "MATCREATOR_CONTROL_PLANE_HOME",
+        str(_SERVER_DATA_ROOT / "control-plane" / ".matcreator"),
+    )
+).expanduser()
+if _MATCREATOR_MODE == "server":
+    os.environ.setdefault("MATCREATOR_HOME", str(_CONTROL_PLANE_HOME_ENV))
 if str(_WEB_DIR) not in sys.path:
     sys.path.insert(0, str(_WEB_DIR))
 
@@ -67,8 +81,19 @@ from matcreator.knowledge.review import run_review_pipeline  # noqa: E402
 
 app = FastAPI(title="MatCreator Graph API", version="1.0.0")
 APP_NAME = "MatCreator"
-SESSION_DB_PATH = Path("~/.matcreator/.adk/session.db").expanduser()
-_ADK_DIR = Path("~/.matcreator/.adk").expanduser()
+_SERVER_HOST_DATA_ROOT = Path(
+    os.environ.get("MATCREATOR_HOST_DATA_ROOT", str(_SERVER_DATA_ROOT))
+).expanduser()
+_CONTROL_PLANE_HOME = _CONTROL_PLANE_HOME_ENV
+_LOCAL_MATCREATOR_HOME = Path("~/.matcreator").expanduser()
+_MATCREATOR_HOME = _CONTROL_PLANE_HOME if _MATCREATOR_MODE == "server" else _LOCAL_MATCREATOR_HOME
+SESSION_DB_PATH = _MATCREATOR_HOME / ".adk" / "session.db"
+_ADK_DIR = _MATCREATOR_HOME / ".adk"
+ENV_PATH = _MATCREATOR_HOME / ".env"
+_USERS_DATA_ROOT = _SERVER_DATA_ROOT / "users"
+_USERS_HOST_ROOT = _SERVER_HOST_DATA_ROOT / "users"
+_WORKER_MATCREATOR_HOME = Path("/root/.matcreator")
+_WORKER_WORKSPACE_ROOT = _WORKER_MATCREATOR_HOME / "workspace"
 DEFAULT_ADMIN_USERS = {"admin"}
 
 app.add_middleware(
@@ -78,7 +103,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-ENV_PATH = Path("~/.matcreator/.env").expanduser()
 _SENSITIVE_FIELDS = frozenset({"LLM_API_KEY", "BOHRIUM_PASSWORD"})
 _ENV_FIELDS = [
     "LLM_MODEL", "LLM_API_KEY", "LLM_BASE_URL", "EMBEDDING_MODEL",
@@ -149,18 +173,83 @@ def _runtime_env_value(env_key: str) -> str:
 # API server.  The control plane (this process) proxies /run_sse and /apps/*
 # to the correct worker and manages the container lifecycle.
 
-_MATCREATOR_MODE = os.environ.get("MATCREATOR_MODE", "local")
 _ADK_LOCAL_PORT = int(os.environ.get("ADK_LOCAL_PORT", "8000"))
 _WORKER_IMAGE = os.environ.get("MATCREATOR_WORKER_IMAGE", "matcreator:latest")
 _WORKER_NETWORK = os.environ.get("MATCREATOR_WORKER_NETWORK", "matcreator-net")
+_WORKER_CONNECT_MODE = os.environ.get("MATCREATOR_WORKER_CONNECT_MODE", "network").lower()
 _WORKER_BASE_PORT = int(os.environ.get("MATCREATOR_WORKER_BASE_PORT", "9001"))
-# Host-side root for per-user session bind-mounts (Option A).
-_SESSIONS_HOST_ROOT = Path(os.environ.get("MATCREATOR_SESSIONS_HOST_ROOT",
-                                          str(ROOT / "server-data" / "sessions")))
+_WORKER_IDLE_TIMEOUT_SECONDS = int(os.environ.get("MATCREATOR_WORKER_IDLE_TIMEOUT_SECONDS", "0"))
+_WORKER_MEM_LIMIT = os.environ.get("MATCREATOR_WORKER_MEM_LIMIT", "")
+_WORKER_CPUS = os.environ.get("MATCREATOR_WORKER_CPUS", "")
+_WORKER_PIDS_LIMIT = os.environ.get("MATCREATOR_WORKER_PIDS_LIMIT", "")
 
-_worker_registry: dict[str, int] = {}   # user_id → host port
+_worker_registry: dict[str, str] = {}   # user_id → base URL
+_worker_ports: dict[str, int] = {}      # user_id → host port (host-port connect mode)
+_worker_last_used: dict[str, float] = {}
 _worker_registry_lock = threading.Lock()
 _docker_client = None
+
+
+def _safe_user_dir_name(user_id: str) -> str:
+    """Return a path-safe user directory name, rejecting path traversal."""
+    candidate = (user_id or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", candidate):
+        raise ValueError(f"Invalid user_id for filesystem path: {user_id!r}")
+    return candidate
+
+
+def _user_matcreator_home(user_id: str, *, host: bool = False) -> Path:
+    root = _USERS_HOST_ROOT if host else _USERS_DATA_ROOT
+    return root / _safe_user_dir_name(user_id) / ".matcreator"
+
+
+def _user_adk_dir(user_id: str) -> Path:
+    return _user_matcreator_home(user_id) / ".adk"
+
+
+def _user_workspace_root(user_id: str) -> Path:
+    return _user_matcreator_home(user_id) / "workspace"
+
+
+def _worker_target_url(user_id: str, port: int | None = None) -> str:
+    if _WORKER_CONNECT_MODE == "host-port":
+        if port is None:
+            raise RuntimeError("host-port worker routing requires a host port")
+        return f"http://127.0.0.1:{port}"
+    return f"http://{_worker_container_name(user_id)}:8000"
+
+
+def _iter_session_db_paths(user_id: str | None = None):
+    if _MATCREATOR_MODE != "server":
+        if SESSION_DB_PATH.exists():
+            yield user_id or "", SESSION_DB_PATH
+        return
+
+    if user_id:
+        db_path = _user_adk_dir(user_id) / "session.db"
+        if db_path.exists():
+            yield user_id, db_path
+        return
+
+    if not _USERS_DATA_ROOT.exists():
+        return
+    for db_path in sorted(_USERS_DATA_ROOT.glob("*/.matcreator/.adk/session.db")):
+        yield db_path.parents[2].name, db_path
+
+
+def _load_session_state(session_id: str, user_id: str | None = None) -> tuple[str | None, dict]:
+    for owner_id, db_path in _iter_session_db_paths(user_id):
+        try:
+            with sqlite3.connect(db_path) as conn:
+                row = conn.execute(
+                    "SELECT state FROM sessions WHERE app_name = ? AND id = ?",
+                    (APP_NAME, session_id),
+                ).fetchone()
+        except sqlite3.Error:
+            continue
+        if row:
+            return owner_id, _load_json_field(row[0], {})
+    return None, {}
 
 
 def _get_docker():
@@ -175,12 +264,12 @@ def _get_docker():
 
 
 def _worker_container_name(user_id: str) -> str:
-    safe = re.sub(r"[^a-zA-Z0-9_-]", "-", user_id)[:24]
+    safe = re.sub(r"[^a-zA-Z0-9_-]", "-", user_id)[:64]
     return f"matcreator-worker-{safe}"
 
 
 def _next_free_port() -> int:
-    used = set(_worker_registry.values())
+    used = set(_worker_ports.values())
     port = _WORKER_BASE_PORT
     while port in used:
         port += 1
@@ -200,48 +289,59 @@ def _worker_env_vars() -> dict[str, str]:
     return {k: v for k in keys if (v := _runtime_env_value(k))}
 
 
-def ensure_worker_running(user_id: str) -> int:
+def ensure_worker_running(user_id: str) -> str:
     """Ensure the worker container for *user_id* is running.
 
-    Returns the localhost port the worker's ADK server is reachable on.
+    Returns the base URL the worker's ADK server is reachable on.
     Creates the container if it doesn't exist.
     """
     import docker as _docker
 
     with _worker_registry_lock:
+        _safe_user_dir_name(user_id)
         name = _worker_container_name(user_id)
         dc = _get_docker()
 
-        # If we already know the port, verify the container is still running.
+        # If we already know the target, verify the container is still running.
         if user_id in _worker_registry:
-            port = _worker_registry[user_id]
+            target = _worker_registry[user_id]
             try:
                 c = dc.containers.get(name)
                 if c.status != "running":
                     c.start()
-                return port
+                _worker_last_used[user_id] = time.time()
+                return target
             except _docker.errors.NotFound:
                 del _worker_registry[user_id]
+                _worker_ports.pop(user_id, None)
 
         # Container might exist from a previous server start.
         try:
             c = dc.containers.get(name)
-            bindings = c.ports.get("8000/tcp") or []
-            if bindings:
-                port = int(bindings[0]["HostPort"])
-                _worker_registry[user_id] = port
+            port = None
+            if _WORKER_CONNECT_MODE == "host-port":
+                bindings = c.ports.get("8000/tcp") or []
+                if not bindings:
+                    c.remove(force=True)
+                    c = None
+                else:
+                    port = int(bindings[0]["HostPort"])
+                    _worker_ports[user_id] = port
+            if c is not None:
+                target = _worker_target_url(user_id, port)
+                _worker_registry[user_id] = target
                 if c.status != "running":
                     c.start()
-                return port
-            # No port binding — remove stale container and recreate.
-            c.remove(force=True)
+                _worker_last_used[user_id] = time.time()
+                return target
         except _docker.errors.NotFound:
             pass
 
         # Create a fresh worker container.
-        port = _next_free_port()
-        session_dir = _SESSIONS_HOST_ROOT / user_id
-        session_dir.mkdir(parents=True, exist_ok=True)
+        port = _next_free_port() if _WORKER_CONNECT_MODE == "host-port" else None
+        user_home_container = _user_matcreator_home(user_id)
+        user_home_host = _user_matcreator_home(user_id, host=True)
+        user_home_container.mkdir(parents=True, exist_ok=True)
 
         env_vars = _worker_env_vars()
         env_vars["MATCREATOR_MODE"] = "server"
@@ -252,26 +352,33 @@ def ensure_worker_running(user_id: str) -> int:
             command=["matcreator", "api-server", "--host", "0.0.0.0", "--port", "8000"],
             name=name,
             environment=env_vars,
-            ports={"8000/tcp": port},
             volumes={
-                str(session_dir): {
-                    "bind": "/root/.matcreator/.adk",
-                    "mode": "rw",
-                },
-                str(_SESSIONS_HOST_ROOT / user_id / "workspace"): {
-                    "bind": "/root/.matcreator/workspace",
+                str(user_home_host): {
+                    "bind": str(_WORKER_MATCREATOR_HOME),
                     "mode": "rw",
                 },
             },
             detach=True,
             restart_policy={"Name": "unless-stopped"},
         )
+        if port is not None:
+            run_kwargs["ports"] = {"8000/tcp": port}
         if _WORKER_NETWORK:
             run_kwargs["network"] = _WORKER_NETWORK
+        if _WORKER_MEM_LIMIT:
+            run_kwargs["mem_limit"] = _WORKER_MEM_LIMIT
+        if _WORKER_CPUS:
+            run_kwargs["nano_cpus"] = int(float(_WORKER_CPUS) * 1_000_000_000)
+        if _WORKER_PIDS_LIMIT:
+            run_kwargs["pids_limit"] = int(_WORKER_PIDS_LIMIT)
 
         dc.containers.run(**run_kwargs)
-        _worker_registry[user_id] = port
-        return port
+        target = _worker_target_url(user_id, port)
+        _worker_registry[user_id] = target
+        if port is not None:
+            _worker_ports[user_id] = port
+        _worker_last_used[user_id] = time.time()
+        return target
 
 
 def stop_worker(user_id: str) -> None:
@@ -280,8 +387,8 @@ def stop_worker(user_id: str) -> None:
         import docker as _docker
         dc = _get_docker()
         dc.containers.get(_worker_container_name(user_id)).stop(timeout=10)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Failed to stop worker for user %s: %s", user_id, exc)
 
 
 def remove_worker(user_id: str) -> None:
@@ -290,9 +397,11 @@ def remove_worker(user_id: str) -> None:
         import docker as _docker
         dc = _get_docker()
         dc.containers.get(_worker_container_name(user_id)).remove(force=True)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Failed to remove worker for user %s: %s", user_id, exc)
     _worker_registry.pop(user_id, None)
+    _worker_ports.pop(user_id, None)
+    _worker_last_used.pop(user_id, None)
 
 
 def _list_workers() -> list[dict]:
@@ -301,7 +410,7 @@ def _list_workers() -> list[dict]:
         import docker as _docker
         dc = _get_docker()
         results = []
-        for user_id, port in list(_worker_registry.items()):
+        for user_id, target in list(_worker_registry.items()):
             name = _worker_container_name(user_id)
             try:
                 c = dc.containers.get(name)
@@ -309,19 +418,40 @@ def _list_workers() -> list[dict]:
             except _docker.errors.NotFound:
                 status = "missing"
             results.append({"user_id": user_id, "container": name,
-                             "port": port, "status": status})
+                             "target": target, "port": _worker_ports.get(user_id),
+                             "status": status, "last_used": _worker_last_used.get(user_id)})
         return results
     except Exception as exc:
         return [{"error": str(exc)}]
 
 
-async def _adk_target_port(request: Request) -> int:
-    """Return the ADK port to proxy to, starting a worker if needed."""
-    if _MATCREATOR_MODE != "server":
-        return _ADK_LOCAL_PORT
+async def _idle_worker_reaper() -> None:
+    """Stop idle workers when MATCREATOR_WORKER_IDLE_TIMEOUT_SECONDS is set."""
+    while True:
+        await asyncio.sleep(min(max(_WORKER_IDLE_TIMEOUT_SECONDS // 2, 60), 600))
+        cutoff = time.time() - _WORKER_IDLE_TIMEOUT_SECONDS
+        with _worker_registry_lock:
+            idle_users = [
+                user_id
+                for user_id, last_used in _worker_last_used.items()
+                if last_used < cutoff
+            ]
+        for user_id in idle_users:
+            await asyncio.to_thread(stop_worker, user_id)
 
-    # Determine user_id from body or query string.
-    user_id = request.query_params.get("user_id", "")
+
+def _extract_user_id_from_adk_path(path: str) -> str:
+    match = re.search(r"(?:^|/)users/([^/]+)(?:/|$)", path)
+    return unquote(match.group(1)) if match else ""
+
+
+async def _adk_target_url(request: Request, adk_path: str = "") -> str:
+    """Return the ADK base URL to proxy to, starting a worker if needed."""
+    if _MATCREATOR_MODE != "server":
+        return f"http://127.0.0.1:{_ADK_LOCAL_PORT}"
+
+    # Determine user_id from query string, ADK URL path, or request body.
+    user_id = request.query_params.get("user_id", "") or _extract_user_id_from_adk_path(adk_path)
     if not user_id:
         try:
             body = await request.body()
@@ -349,11 +479,11 @@ def _is_port_open(host: str = "127.0.0.1", port: int = 8000) -> bool:
 # ADK proxy routes — forward /run_sse, /apps/*, /list-apps to the right worker
 # ---------------------------------------------------------------------------
 
-async def _proxy_request(request: Request, port: int, path: str) -> Response:
-    url = f"http://127.0.0.1:{port}/{path.lstrip('/')}"
+async def _proxy_request(request: Request, target_url: str, path: str) -> Response:
+    url = f"{target_url.rstrip('/')}/{path.lstrip('/')}"
     params = dict(request.query_params)
     headers = {k: v for k, v in request.headers.items()
-               if k.lower() not in ("host", "content-length")}
+               if k.lower() not in ("host", "content-length", "origin")}
     body = await request.body()
     async with httpx.AsyncClient(timeout=None) as client:
         resp = await client.request(
@@ -371,11 +501,11 @@ async def _proxy_request(request: Request, port: int, path: str) -> Response:
     )
 
 
-async def _proxy_sse(request: Request, port: int, path: str):
-    url = f"http://127.0.0.1:{port}/{path.lstrip('/')}"
+async def _proxy_sse(request: Request, target_url: str, path: str):
+    url = f"{target_url.rstrip('/')}/{path.lstrip('/')}"
     params = dict(request.query_params)
     headers = {k: v for k, v in request.headers.items()
-               if k.lower() not in ("host", "content-length")}
+               if k.lower() not in ("host", "content-length", "origin")}
     body = await request.body()
 
     async def stream():
@@ -395,20 +525,21 @@ async def _proxy_sse(request: Request, port: int, path: str):
 
 @app.api_route("/run_sse", methods=["GET", "POST"])
 async def proxy_run_sse(request: Request):
-    port = await _adk_target_port(request)
-    return await _proxy_sse(request, port, "/run_sse")
+    target_url = await _adk_target_url(request, "/run_sse")
+    return await _proxy_sse(request, target_url, "/run_sse")
 
 
 @app.api_route("/apps/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
 async def proxy_apps(path: str, request: Request):
-    port = await _adk_target_port(request)
-    return await _proxy_request(request, port, f"/apps/{path}")
+    adk_path = f"/apps/{path}"
+    target_url = await _adk_target_url(request, adk_path)
+    return await _proxy_request(request, target_url, adk_path)
 
 
 @app.api_route("/list-apps", methods=["GET"])
 async def proxy_list_apps(request: Request):
-    port = await _adk_target_port(request)
-    return await _proxy_request(request, port, "/list-apps")
+    target_url = await _adk_target_url(request, "/list-apps")
+    return await _proxy_request(request, target_url, "/list-apps")
 
 
 # ---------------------------------------------------------------------------
@@ -428,8 +559,8 @@ async def start_worker_api(worker_user_id: str, user_id: str = Query(...)) -> JS
         raise HTTPException(status_code=403, detail="Admin access required")
     if _MATCREATOR_MODE != "server":
         raise HTTPException(status_code=400, detail="Worker management only available in server mode")
-    port = await asyncio.to_thread(ensure_worker_running, worker_user_id)
-    return JSONResponse({"user_id": worker_user_id, "port": port, "status": "running"})
+    target = await asyncio.to_thread(ensure_worker_running, worker_user_id)
+    return JSONResponse({"user_id": worker_user_id, "target": target, "status": "running"})
 
 
 @app.post("/api/workers/{worker_user_id}/stop")
@@ -530,17 +661,9 @@ def _query_session_summaries(user_id: str | None = None) -> list[dict]:
 
 def _query_session_summaries_server(user_id: str | None = None) -> list[dict]:
     """In server mode, aggregate sessions from all per-user session DBs."""
-    if not _SESSIONS_HOST_ROOT.exists():
-        return []
-
     results: list[dict] = []
-    # Each user's DB is at _SESSIONS_HOST_ROOT/<user_id>/session.db
-    # (Option A bind-mount layout)
-    db_paths = list(_SESSIONS_HOST_ROOT.glob("*/session.db"))
-    for db_path in db_paths:
-        owner_id = db_path.parent.name
-        if user_id is not None and owner_id != user_id:
-            continue
+    # Each user's DB is at users/<user_id>/.matcreator/.adk/session.db.
+    for owner_id, db_path in _iter_session_db_paths(user_id):
         try:
             with sqlite3.connect(db_path) as conn:
                 conn.row_factory = sqlite3.Row
@@ -571,41 +694,74 @@ def _load_json_field(raw_value: str | None, fallback):
 
 
 def _load_agent_graph_data(session_id: str) -> dict:
-    graph_path = _ADK_DIR / "agent_graphs" / f"{session_id}.json"
-    if not graph_path.exists():
-        return {}
+    graph_paths: list[Path]
+    if _MATCREATOR_MODE == "server":
+        graph_paths = [
+            _user_adk_dir(owner_id) / "agent_graphs" / f"{session_id}.json"
+            for owner_id, _ in _iter_session_db_paths()
+        ]
+    else:
+        graph_paths = [_ADK_DIR / "agent_graphs" / f"{session_id}.json"]
+
+    for graph_path in graph_paths:
+        if not graph_path.exists():
+            continue
+        try:
+            return json.loads(graph_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}
+    return {}
+
+
+def _map_worker_path_to_control_plane(user_id: str, path_str: str) -> Path | None:
+    raw = (path_str or "").strip()
+    if not raw:
+        return None
+    if raw.startswith("~/"):
+        raw = str(_WORKER_MATCREATOR_HOME.parent / raw[2:])
+    candidate = Path(raw)
+    workspace_root = _user_workspace_root(user_id)
+    user_home = _user_matcreator_home(user_id)
+
+    if not candidate.is_absolute():
+        return (workspace_root / candidate).resolve()
+
     try:
-        return json.loads(graph_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {}
+        rel = candidate.relative_to(_WORKER_WORKSPACE_ROOT)
+        return (workspace_root / rel).resolve()
+    except ValueError:
+        pass
+
+    try:
+        rel = candidate.relative_to(_WORKER_MATCREATOR_HOME)
+        return (user_home / rel).resolve()
+    except ValueError:
+        return candidate.resolve()
 
 
 def _get_workdir_for_session(session_id: str) -> Path:
     """Resolve workdir for a session, preferring the value stored in session state.
 
     Priority: state["workdir"] → state["custom_workdir"] → computed default.
-    In server mode, custom paths outside WORKSPACE_ROOT are rejected.
+    In server mode, worker-container paths are mapped to the user's host-mounted
+    .matcreator tree and paths outside that user's workspace are rejected.
     """
-    if SESSION_DB_PATH.exists():
-        try:
-            with sqlite3.connect(SESSION_DB_PATH) as conn:
-                row = conn.execute(
-                    "SELECT state FROM sessions WHERE app_name = ? AND id = ?",
-                    (APP_NAME, session_id),
-                ).fetchone()
-                if row:
-                    s = _load_json_field(row[0], {})
-                    path_str = s.get("workdir") or s.get("custom_workdir")
-                    if path_str:
-                        candidate = Path(path_str).expanduser().resolve()
-                        if _MATCREATOR_MODE == "server":
-                            ws_root = get_workspace_root().resolve()
-                            if candidate.is_relative_to(ws_root):
-                                return candidate
-                        else:
-                            return candidate
-        except sqlite3.Error:
-            pass
+    owner_id, state = _load_session_state(session_id)
+    path_str = state.get("workdir") or state.get("custom_workdir")
+    if path_str:
+        if _MATCREATOR_MODE == "server" and owner_id:
+            candidate = _map_worker_path_to_control_plane(owner_id, path_str)
+            ws_root = _user_workspace_root(owner_id).resolve()
+            if candidate and candidate.is_relative_to(ws_root):
+                return candidate
+        elif _MATCREATOR_MODE != "server":
+            return Path(path_str).expanduser().resolve()
+
+    if _MATCREATOR_MODE == "server" and owner_id:
+        return _user_workspace_root(owner_id)
+    if _MATCREATOR_MODE == "server":
+        return _USERS_DATA_ROOT / "_unknown" / ".matcreator" / "workspace"
+
     # Fall back to config.yaml default_workdir before using WORKSPACE_ROOT
     cfg_workdir = (load_config().get("workspace") or {}).get("default_workdir") or ""
     if cfg_workdir:
@@ -640,6 +796,48 @@ def _available_upload_path(upload_dir: Path, filename: str) -> Path:
     raise HTTPException(status_code=409, detail="Too many files with the same name")
 
 
+def _control_plane_path_to_worker(user_id: str, path: Path) -> str:
+    if _MATCREATOR_MODE != "server":
+        return str(path)
+    user_home = _user_matcreator_home(user_id).resolve()
+    try:
+        rel = path.resolve().relative_to(user_home)
+    except ValueError:
+        return str(path)
+    return str(_WORKER_MATCREATOR_HOME / rel)
+
+
+def _resolve_readable_file_path(path: str, session_id: str = "") -> Path:
+    if _MATCREATOR_MODE == "server":
+        owner_id = None
+        if session_id:
+            owner_id, _ = _load_session_state(session_id)
+        if owner_id:
+            resolved = _map_worker_path_to_control_plane(owner_id, path)
+            if resolved is None:
+                raise HTTPException(status_code=404, detail="File not found")
+            allowed_roots = [
+                _get_workdir_for_session(session_id).resolve(),
+                _user_workspace_root(owner_id).resolve(),
+            ]
+        else:
+            resolved = Path(path).expanduser().resolve()
+            allowed_roots = [_USERS_DATA_ROOT.resolve()]
+        if not any(resolved.is_relative_to(root) for root in allowed_roots):
+            raise HTTPException(status_code=403, detail="Access denied: path is outside workspace")
+        return resolved
+
+    ws_root = get_workspace_root().resolve()
+    p = Path(path)
+    resolved = p.resolve() if p.is_absolute() else (ws_root / p).resolve()
+    allowed = ws_root
+    if session_id:
+        allowed = _get_workdir_for_session(session_id).resolve()
+    if not resolved.is_relative_to(allowed) and not resolved.is_relative_to(ws_root):
+        raise HTTPException(status_code=403, detail="Access denied: path is outside workspace")
+    return resolved
+
+
 @app.get("/api/health")
 async def health_check():
     mode = os.environ.get("MATCREATOR_MODE", "local")
@@ -647,7 +845,10 @@ async def health_check():
 @app.on_event("startup")
 async def _on_startup() -> None:
     users_db.init_db()
-    users_db.migrate_legacy_adk_sessions(SESSION_DB_PATH, APP_NAME)
+    if _MATCREATOR_MODE != "server":
+        users_db.migrate_legacy_adk_sessions(SESSION_DB_PATH, APP_NAME)
+    if _MATCREATOR_MODE == "server" and _WORKER_IDLE_TIMEOUT_SECONDS > 0:
+        asyncio.create_task(_idle_worker_reaper())
 
 
 class LoginBody(BaseModel):
@@ -664,6 +865,10 @@ class SetPasswordBody(BaseModel):
     user_id: str
     old_password: str | None = None
     new_password: str
+
+
+class LogoutBody(BaseModel):
+    user_id: str
 
 
 class KnowledgeReviewBody(BaseModel):
@@ -771,6 +976,8 @@ async def auth_login(body: LoginBody) -> JSONResponse:
 
     # Special identity: "user" always allowed, no password required.
     if name == users_db.LEGACY_USER:
+        if _MATCREATOR_MODE == "server":
+            await asyncio.to_thread(ensure_worker_running, users_db.LEGACY_USER)
         return JSONResponse({
             "user_id": users_db.LEGACY_USER,
             "display_name": users_db.LEGACY_USER,
@@ -808,6 +1015,9 @@ async def auth_register(body: RegisterBody) -> JSONResponse:
         raise HTTPException(status_code=409, detail="Username already taken.")
 
     user = users_db.create_user(name, body.password)
+    if _MATCREATOR_MODE == "server":
+        await asyncio.to_thread(ensure_worker_running, user["id"])
+
     return JSONResponse({
         "user_id": user["id"],
         "display_name": user["display_name"],
@@ -828,6 +1038,14 @@ async def auth_set_password(body: SetPasswordBody) -> JSONResponse:
     return JSONResponse({"status": "ok"})
 
 
+@app.post("/api/auth/logout")
+async def auth_logout(body: LogoutBody) -> JSONResponse:
+    """Log out the current user and stop their server-mode worker."""
+    if _MATCREATOR_MODE == "server" and body.user_id:
+        await asyncio.to_thread(stop_worker, body.user_id)
+    return JSONResponse({"status": "ok"})
+
+
 @app.get("/api/session-access/{user_id}")
 async def get_session_access(user_id: str) -> JSONResponse:
     return JSONResponse({"user_id": user_id, "is_admin": _is_admin(user_id)})
@@ -840,11 +1058,12 @@ async def list_user_sessions(user_id: str) -> JSONResponse:
 
 @app.get("/api/users/{user_id}/sessions/{session_id}")
 async def get_user_session(user_id: str, session_id: str) -> JSONResponse:
-    if not SESSION_DB_PATH.exists():
+    session_db_path = next((db for _, db in _iter_session_db_paths(user_id)), None)
+    if not session_db_path:
         raise HTTPException(status_code=404, detail="Session not found")
 
     try:
-        with sqlite3.connect(SESSION_DB_PATH) as conn:
+        with sqlite3.connect(session_db_path) as conn:
             conn.row_factory = sqlite3.Row
             session = conn.execute(
                 """
@@ -892,14 +1111,20 @@ async def list_all_sessions(user_id: str = Query(..., description="Current signe
 async def delete_session(session_id: str) -> JSONResponse:
     """Delete a session and all associated metadata. Workspace files are not deleted."""
     # 1. Delete from session DB (events cascade-deleted via FK)
-    if SESSION_DB_PATH.exists():
+    deleted_owners: list[str] = []
+    db_paths = list(_iter_session_db_paths()) if _MATCREATOR_MODE == "server" else [("", SESSION_DB_PATH)]
+    for owner_id, db_path in db_paths:
+        if not db_path.exists():
+            continue
         try:
-            with sqlite3.connect(SESSION_DB_PATH) as conn:
+            with sqlite3.connect(db_path) as conn:
                 conn.execute("PRAGMA foreign_keys = ON")
-                conn.execute(
+                cur = conn.execute(
                     "DELETE FROM sessions WHERE app_name = ? AND id = ?",
                     (APP_NAME, session_id),
                 )
+                if cur.rowcount:
+                    deleted_owners.append(owner_id)
         except sqlite3.Error as exc:
             raise HTTPException(status_code=500, detail=f"Failed to delete session from DB: {exc}")
 
@@ -910,13 +1135,25 @@ async def delete_session(session_id: str) -> JSONResponse:
         _save_summaries(summaries)
 
     # 3. Delete session-scoped metadata artifacts (not workspace files)
-    workspace = get_workspace_root()
-    targets = [
-        _ADK_DIR / "agent_graphs" / f"{session_id}.json",
-        workspace / "trajectories" / f"{session_id}.jsonl",
-        workspace / "trajectories" / f"{session_id}_summary.json",
-        workspace / "cancellation" / f"{session_id}.flag",
-    ]
+    if _MATCREATOR_MODE == "server":
+        targets = []
+        for owner_id in deleted_owners:
+            workspace = _user_workspace_root(owner_id)
+            adk_dir = _user_adk_dir(owner_id)
+            targets.extend([
+                adk_dir / "agent_graphs" / f"{session_id}.json",
+                workspace / "trajectories" / f"{session_id}.jsonl",
+                workspace / "trajectories" / f"{session_id}_summary.json",
+                workspace / "cancellation" / f"{session_id}.flag",
+            ])
+    else:
+        workspace = get_workspace_root()
+        targets = [
+            _ADK_DIR / "agent_graphs" / f"{session_id}.json",
+            workspace / "trajectories" / f"{session_id}.jsonl",
+            workspace / "trajectories" / f"{session_id}_summary.json",
+            workspace / "cancellation" / f"{session_id}.flag",
+        ]
     for target in targets:
         try:
             if target.is_file():
@@ -929,26 +1166,26 @@ async def delete_session(session_id: str) -> JSONResponse:
 
 def _load_execution_graph(session_id: str) -> dict:
     """Read execution_graph from the SQLite session state."""
-    if not SESSION_DB_PATH.exists():
-        return {"nodes": {}, "edges": []}
-    try:
-        with sqlite3.connect(SESSION_DB_PATH) as conn:
-            conn.row_factory = sqlite3.Row
-            row = conn.execute(
-                "SELECT state FROM sessions WHERE app_name = ? AND id = ?",
-                (APP_NAME, session_id),
-            ).fetchone()
-            if row is None:
-                return {"nodes": {}, "edges": []}
-            state = _load_json_field(row["state"], {})
-            raw = state.get("execution_graph")
-            if isinstance(raw, str):
-                raw = _load_json_field(raw, None)
-            if not isinstance(raw, dict):
-                return {"nodes": {}, "edges": []}
-            return raw
-    except sqlite3.Error:
-        return {"nodes": {}, "edges": []}
+    for _, db_path in _iter_session_db_paths():
+        try:
+            with sqlite3.connect(db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute(
+                    "SELECT state FROM sessions WHERE app_name = ? AND id = ?",
+                    (APP_NAME, session_id),
+                ).fetchone()
+                if row is None:
+                    continue
+                state = _load_json_field(row["state"], {})
+                raw = state.get("execution_graph")
+                if isinstance(raw, str):
+                    raw = _load_json_field(raw, None)
+                if not isinstance(raw, dict):
+                    return {"nodes": {}, "edges": []}
+                return raw
+        except sqlite3.Error:
+            continue
+    return {"nodes": {}, "edges": []}
 
 
 @app.get("/api/execution-graph/{session_id}")
@@ -972,14 +1209,7 @@ async def serve_workspace_file(
     path: str = Query(..., description="Absolute or workspace-relative file path"),
     session_id: str = Query(default="", description="Session ID to resolve custom workdir boundaries"),
 ) -> FileResponse:
-    ws_root = get_workspace_root().resolve()
-    p = Path(path)
-    resolved = p.resolve() if p.is_absolute() else (ws_root / p).resolve()
-    allowed = ws_root
-    if session_id:
-        allowed = _get_workdir_for_session(session_id).resolve()
-    if not resolved.is_relative_to(allowed) and not resolved.is_relative_to(ws_root):
-        raise HTTPException(status_code=403, detail="Access denied: path is outside workspace")
+    resolved = _resolve_readable_file_path(path, session_id)
     if not resolved.is_file():
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(resolved)
@@ -998,14 +1228,7 @@ async def view_structure(
     except ImportError:
         raise HTTPException(status_code=500, detail="ASE is not installed")
 
-    ws_root = get_workspace_root().resolve()
-    p = Path(path)
-    resolved = p.resolve() if p.is_absolute() else (ws_root / p).resolve()
-    allowed = ws_root
-    if session_id:
-        allowed = _get_workdir_for_session(session_id).resolve()
-    if not resolved.is_relative_to(allowed) and not resolved.is_relative_to(ws_root):
-        raise HTTPException(status_code=403, detail="Access denied: path is outside workspace")
+    resolved = _resolve_readable_file_path(path, session_id)
     if not resolved.is_file():
         raise HTTPException(status_code=404, detail="File not found")
 
@@ -1029,11 +1252,16 @@ async def view_structure(
 
 @app.get("/api/sessions/{session_id}/files")
 async def list_session_files(session_id: str) -> JSONResponse:
+    owner_id, _ = _load_session_state(session_id)
     session_dir = _get_workdir_for_session(session_id)
     if not session_dir.exists():
         return JSONResponse({"files": []})
     files = [
-        {"name": f.name, "path": str(f), "size": f.stat().st_size}
+        {
+            "name": f.name,
+            "path": _control_plane_path_to_worker(owner_id, f) if owner_id else str(f),
+            "size": f.stat().st_size,
+        }
         for f in sorted(session_dir.rglob("*"))
         if f.is_file()
     ]
@@ -1042,6 +1270,7 @@ async def list_session_files(session_id: str) -> JSONResponse:
 
 @app.post("/api/sessions/{session_id}/files")
 async def upload_session_file(session_id: str, file: UploadFile = File(...)) -> JSONResponse:
+    owner_id, _ = _load_session_state(session_id)
     session_dir = _get_workdir_for_session(session_id)
     upload_dir = session_dir / "uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
@@ -1062,7 +1291,7 @@ async def upload_session_file(session_id: str, file: UploadFile = File(...)) -> 
 
     return JSONResponse({
         "name": target.name,
-        "path": str(target),
+        "path": _control_plane_path_to_worker(owner_id, target) if owner_id else str(target),
         "size": size,
     })
 
@@ -1072,9 +1301,16 @@ async def delete_session_file(
     session_id: str,
     path: str = Query(..., description="Absolute or session-relative file path"),
 ) -> JSONResponse:
+    owner_id, _ = _load_session_state(session_id)
     session_dir = _get_workdir_for_session(session_id).resolve()
-    p = Path(path)
-    resolved = p.resolve() if p.is_absolute() else (session_dir / p).resolve()
+    if _MATCREATOR_MODE == "server" and owner_id:
+        resolved = _map_worker_path_to_control_plane(owner_id, path)
+        if resolved is None:
+            raise HTTPException(status_code=404, detail="File not found")
+        resolved = resolved.resolve()
+    else:
+        p = Path(path)
+        resolved = p.resolve() if p.is_absolute() else (session_dir / p).resolve()
 
     if not resolved.is_relative_to(session_dir):
         raise HTTPException(status_code=403, detail="Access denied: path is outside session")
@@ -1444,10 +1680,10 @@ async def restart_backend(user_id: str = Query(default="")) -> JSONResponse:
                 c = dc.containers.get(name)
                 c.restart(timeout=15)
             except _docker.errors.NotFound:
-                port = await asyncio.to_thread(ensure_worker_running, user_id)
-                return JSONResponse({"status": "created", "user_id": user_id, "port": port})
-            port = _worker_registry.get(user_id, None)
-            return JSONResponse({"status": "restarting", "user_id": user_id, "port": port})
+                target = await asyncio.to_thread(ensure_worker_running, user_id)
+                return JSONResponse({"status": "created", "user_id": user_id, "target": target})
+            target = _worker_registry.get(user_id)
+            return JSONResponse({"status": "restarting", "user_id": user_id, "target": target})
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc))
 
@@ -1478,10 +1714,15 @@ async def get_backend_status(user_id: str = Query(default="")) -> JSONResponse:
     """
     if _MATCREATOR_MODE == "server" and user_id:
         with _worker_registry_lock:
-            port = _worker_registry.get(user_id)
-        if port is None:
+            target = _worker_registry.get(user_id)
+        if target is None:
             return JSONResponse({"ready": False})
-        return JSONResponse({"ready": _is_port_open("127.0.0.1", port)})
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                resp = await client.get(f"{target.rstrip('/')}/list-apps")
+            return JSONResponse({"ready": resp.status_code < 500})
+        except httpx.HTTPError:
+            return JSONResponse({"ready": False})
 
     return JSONResponse({"ready": _is_port_open(port=_ADK_LOCAL_PORT)})
 

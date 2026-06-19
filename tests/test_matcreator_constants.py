@@ -6,6 +6,7 @@ from pathlib import Path
 
 
 def test_default_kdg_db_path_points_to_repo_local_adk(monkeypatch) -> None:
+    monkeypatch.delenv("MATCREATOR_HOME", raising=False)
     monkeypatch.delenv("KDG_DB_PATH", raising=False)
     sys.modules.pop("src.matcreator.constants", None)
     sys.modules.pop("src.matcreator.config", None)
@@ -19,6 +20,7 @@ def test_default_kdg_db_path_points_to_repo_local_adk(monkeypatch) -> None:
 
 
 def test_repo_local_kdg_db_is_treated_as_legacy_source(monkeypatch) -> None:
+    monkeypatch.delenv("MATCREATOR_HOME", raising=False)
     monkeypatch.delenv("KDG_DB_PATH", raising=False)
     sys.modules.pop("src.matcreator.constants", None)
     sys.modules.pop("src.matcreator.config", None)
@@ -32,6 +34,7 @@ def test_repo_local_kdg_db_is_treated_as_legacy_source(monkeypatch) -> None:
 
 def test_legacy_minimax_env_is_normalized(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("MATCREATOR_HOME", raising=False)
     monkeypatch.delenv("KDG_DB_PATH", raising=False)
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     monkeypatch.delenv("LLM_BASE_URL", raising=False)
@@ -48,6 +51,7 @@ def test_legacy_minimax_env_is_normalized(monkeypatch, tmp_path: Path) -> None:
 
 def test_embedding_model_is_forwarded_to_kdg_embedder(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("MATCREATOR_HOME", raising=False)
     monkeypatch.delenv("KDG_DB_PATH", raising=False)
     monkeypatch.delenv("KDG_EMBED_PROVIDER", raising=False)
     monkeypatch.delenv("KDG_EMBED_MODEL", raising=False)
@@ -65,3 +69,20 @@ def test_embedding_model_is_forwarded_to_kdg_embedder(monkeypatch, tmp_path: Pat
     assert constants.os.environ["KDG_EMBED_MODEL"] == "minimax/qwen3-embedding-8b"
     assert constants.os.environ["KDG_EMBED_API_KEY"] == "embed-key"
     assert constants.os.environ["KDG_EMBED_BASE_URL"] == "https://embed.example/v1"
+
+
+def test_matcreator_home_overrides_user_storage_paths(monkeypatch, tmp_path: Path) -> None:
+    matcreator_home = tmp_path / "server-home"
+    monkeypatch.setenv("MATCREATOR_HOME", str(matcreator_home))
+    monkeypatch.delenv("KDG_DB_PATH", raising=False)
+    sys.modules.pop("src.matcreator.constants", None)
+    sys.modules.pop("src.matcreator.config", None)
+    sys.modules.pop("src.matcreator.workspace", None)
+
+    constants = importlib.import_module("src.matcreator.constants")
+    config = importlib.import_module("src.matcreator.config")
+    workspace = importlib.import_module("src.matcreator.workspace")
+
+    assert constants.DEFAULT_KDG_DB_PATH == matcreator_home / ".adk" / "know_do_graph.db"
+    assert config._CONFIG_PATH == matcreator_home / "config.yaml"
+    assert workspace.get_workspace_root() == (matcreator_home / "workspace").resolve()

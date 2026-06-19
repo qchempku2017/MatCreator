@@ -26,11 +26,17 @@ def get_workspace_root() -> Path:
     env_val = os.environ.get("MATCLAW_WORKSPACE", "")
     if env_val:
         return Path(env_val).expanduser().resolve()
-    return (Path.home() / ".matcreator" / "workspace").resolve()
+    matcreator_home = Path(
+        os.environ.get("MATCREATOR_HOME", str(Path.home() / ".matcreator"))
+    ).expanduser()
+    return (matcreator_home / "workspace").resolve()
 
 WORKSPACE_ROOT=get_workspace_root()  # resolved once at module load time for efficiency
 
-ADK_DIR = (Path.home() / ".matcreator" / ".adk").resolve()  # centralized session metadata
+ADK_DIR = (
+    Path(os.environ.get("MATCREATOR_HOME", str(Path.home() / ".matcreator"))).expanduser()
+    / ".adk"
+).resolve()  # centralized session metadata
 
 
 def workspace_skills_dir() -> Path:

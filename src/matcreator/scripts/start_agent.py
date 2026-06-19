@@ -37,8 +37,9 @@ import yaml
 import click
 
 
-_CONFIG_PATH = Path("~/.matcreator/config.yaml").expanduser()
-_DEFAULT_ADK_DIR = Path("~/.matcreator/.adk").expanduser()
+_MATCREATOR_HOME = Path(os.environ.get("MATCREATOR_HOME", "~/.matcreator")).expanduser()
+_CONFIG_PATH = _MATCREATOR_HOME / "config.yaml"
+_DEFAULT_ADK_DIR = _MATCREATOR_HOME / ".adk"
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
