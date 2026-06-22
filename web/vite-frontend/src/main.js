@@ -721,21 +721,42 @@ class StepExecutionFeed {
   _insertSorted(outer, node) {
     const newTime = node.start_time ? new Date(node.start_time).getTime() : Infinity;
     outer.dataset.stepStartTime = String(newTime);
-    const stepCards = [...this._cards.entries()]
-      .filter(([id, el]) => id !== node.id && chatArea.contains(el))
-      .sort(([, a], [, b]) => {
-        const ta = a.dataset.stepStartTime ? Number(a.dataset.stepStartTime) : Infinity;
-        const tb = b.dataset.stepStartTime ? Number(b.dataset.stepStartTime) : Infinity;
-        return ta - tb;
-      });
-    for (const [, card] of stepCards) {
-      const cardTime = card.dataset.stepStartTime ? Number(card.dataset.stepStartTime) : Infinity;
-      if (newTime < cardTime) {
-        chatArea.insertBefore(outer, card);
-        return;
+
+    // Walk all chat children to find the right insertion point.
+    // - Step cards: compare by start_time, insert before the first later one.
+    // - User/agent messages: track as anchor, but reset when a step card is
+    //   found after them (so we insert after the most recent step card too).
+    const children = [...chatArea.children];
+    let insertAfter = null; // element to insert after (null = before first child)
+
+    for (const el of children) {
+      if (el === outer) continue;
+
+      if (el.dataset.stepStartTime) {
+        const elTime = Number(el.dataset.stepStartTime);
+        if (newTime < elTime) {
+          // Found a later step card — insert before it
+          if (insertAfter) {
+            chatArea.insertBefore(outer, insertAfter.nextElementSibling);
+          } else {
+            chatArea.insertBefore(outer, el);
+          }
+          return;
+        }
+        // This step card is earlier — update anchor
+        insertAfter = el;
+      } else if (el.dataset.msgIndex !== undefined) {
+        // User/agent message — update anchor
+        insertAfter = el;
       }
     }
-    chatArea.appendChild(outer);
+
+    // No later step card found — insert after the last tracked element.
+    if (insertAfter) {
+      chatArea.insertBefore(outer, insertAfter.nextElementSibling);
+    } else {
+      chatArea.appendChild(outer);
+    }
   }
 
   _createCard(node) {
@@ -1952,9 +1973,10 @@ function isChatNearBottom() {
   return chatArea.scrollHeight - chatArea.scrollTop - chatArea.clientHeight < 80;
 }
 
-function addMessage(role, content) {
+function addMessage(role, content, msgIndex) {
   const div = document.createElement("div");
   div.className = `message ${role}-message`;
+  if (msgIndex !== undefined) div.dataset.msgIndex = String(msgIndex);
 
   const avatar = role === "agent" ? createAgentAvatarEl() : createUserAvatarEl();
   div.appendChild(avatar);
@@ -2073,9 +2095,10 @@ function renderTimeline(container, timeline, shownPlotPaths = null) {
 
 // Create an agent message div with an inner timeline container, append to
 // chatArea, and return the inner container for live updates.
-function addAgentTimelineMessage(timeline, shownPlotPaths = null) {
+function addAgentTimelineMessage(timeline, shownPlotPaths = null, msgIndex) {
   const outer = document.createElement("div");
   outer.className = "message agent-message";
+  if (msgIndex !== undefined) outer.dataset.msgIndex = String(msgIndex);
   outer.appendChild(createAgentAvatarEl());
   const bubble = document.createElement("div");
   bubble.className = "message-bubble";
@@ -2748,6 +2771,57 @@ async function loadSession(sessionId) {
     // Rebuild chat from server-canonical state
     chatArea.innerHTML = "";
     stepExecutionFeed.reset();
+    let msgIdx = 0;
+
+    // Show session summary banner if available, clear otherwise
+    if (sessionData.summary) {
+      state.sessionSummaries[sessionId] = sessionData.summary;
+      state.summaryGeneratedFor.add(sessionId);
+    }
+    renderSessionBanner(sessionData.summary || "");
+
+    // Fetch graph data upfront so we can merge events and step cards
+    // into a single chronological timeline.
+    let graphNodes = [];
+    try {
+      const graphResp = await fetch(`/api/agent-graph/${encodeURIComponent(sessionId)}`);
+      if (graphResp.ok) {
+        const graphData = await graphResp.json();
+        graphNodes = Object.values(graphData.nodes || {})
+          .filter((n) => n.type === "step")
+          .sort((a, b) => {
+            const ta = a.start_time ? new Date(a.start_time).getTime() : Infinity;
+            const tb = b.start_time ? new Date(b.start_time).getTime() : Infinity;
+            return ta - tb;
+          });
+      }
+    } catch (_) {}
+
+    // Build a unified timeline: events and step cards sorted by timestamp.
+    const timeline = [];
+
+    events.forEach((event, idx) => {
+      // ADK event.timestamp is a float in seconds; convert to ms for comparison
+      // with step card start_time (which is an ISO string → ms via Date.getTime).
+      let ts;
+      if (event.timestamp) {
+        const raw = Number(event.timestamp);
+        ts = raw < 1e12 ? raw * 1000 : raw; // seconds → ms if needed
+      } else if (event.createTime) {
+        ts = new Date(event.createTime).getTime();
+      } else {
+        ts = idx;
+      }
+      timeline.push({ type: "event", data: event, ts, order: idx });
+    });
+
+    graphNodes.forEach((node, idx) => {
+      const ts = node.start_time ? new Date(node.start_time).getTime() : Infinity;
+      timeline.push({ type: "step", data: node, ts, order: 1e9 + idx });
+    });
+
+    timeline.sort((a, b) => a.ts - b.ts || a.order - b.order);
+
 
     // First pass: collect all functionResponses keyed by ID for cross-event matching
     const frById = {};
@@ -2760,34 +2834,41 @@ async function loadSession(sessionId) {
       }
     }
 
-    for (const event of events) {
+    // Process the unified timeline in chronological order
+    for (const item of timeline) {
+      if (item.type === "step") {
+        stepExecutionFeed._upsert(item.data);
+        continue;
+      }
+
+      const event = item.data;
       const role = event.author === "user" ? "user" : "agent";
       const parts = event.content?.parts || [];
 
       if (role === "user") {
         const text = displayMessageFromStoredUserText(parts.map((p) => p.text || "").join(""));
-        if (text) addMessage("user", text);
+        if (text) addMessage("user", text, msgIdx++);
         shownPlotPaths = new Set();
         continue;
       }
 
-      const timeline = [];
+      const evtTimeline = [];
       let accText = "";
 
       for (const p of parts) {
         if (p.thought) {
-          timeline.push({ type: "thought", text: p.text || "" });
+          evtTimeline.push({ type: "thought", text: p.text || "" });
         } else if (getFunctionCall(p)) {
           const fc = getFunctionCall(p);
           const matchedFr = frById[fc.id];
-          timeline.push({
+          evtTimeline.push({
             type: "function_call",
             id: fc.id,
             name: fc.name || "Unknown",
             args: fc.args || {},
           });
           if (matchedFr) {
-            timeline.push({
+            evtTimeline.push({
               type: "function_response",
               id: matchedFr.id,
               name: matchedFr.name || "Unknown",
@@ -2796,11 +2877,11 @@ async function loadSession(sessionId) {
           }
         } else if (getFunctionResponse(p)) {
           const fr = getFunctionResponse(p);
-          const alreadyMatched = timeline.some(
+          const alreadyMatched = evtTimeline.some(
             (t) => t.type === "function_response" && t.id === fr.id
           );
           if (!alreadyMatched) {
-            timeline.push({
+            evtTimeline.push({
               type: "function_response",
               id: fr.id,
               name: fr.name || "Unknown",
@@ -2809,17 +2890,17 @@ async function loadSession(sessionId) {
           }
         } else if (p.text && !p.thought) {
           accText += p.text;
-          const last = timeline[timeline.length - 1];
+          const last = evtTimeline[evtTimeline.length - 1];
           if (last?.type === "text") {
             last.text = accText;
           } else {
-            timeline.push({ type: "text", text: accText });
+            evtTimeline.push({ type: "text", text: accText });
           }
         }
       }
 
-      if (timeline.length > 0) {
-        addAgentTimelineMessage(timeline, shownPlotPaths);
+      if (evtTimeline.length > 0) {
+        addAgentTimelineMessage(evtTimeline, shownPlotPaths, msgIdx++);
       }
     }
 
