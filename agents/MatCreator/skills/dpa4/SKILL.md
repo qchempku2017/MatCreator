@@ -317,6 +317,13 @@ Use `remote_profile` with an `input_data` sub-object for Bohrium.
 > `<model>` is the base model name inside the workdir — the prepare script prints it as
 > `model_name` in its JSON output.
 
+> ⚠️ **CRITICAL — backward_files must include ALL outputs from the command chain.**
+> The `dp --pt freeze -c model.ckpt.pt -o frozen` step produces `frozen.pt2`.
+> **If `frozen.pt2` is missing from `backward_files`, the trained model will NOT be
+> downloaded from Bohrium — the finetuning result is permanently lost.**
+> Always verify `backward_files` contains at least: `model.ckpt.pt`, `frozen.pt2`,
+> `lcurve.out`, `train_log` (plus test outputs when applicable).
+
 ### Step 3 — Substitute, validate, and submit
 
 ```bash
