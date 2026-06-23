@@ -1924,6 +1924,22 @@ function pathToApiUrl(path) {
 // Chat helpers
 // ---------------------------------------------------------------------------
 
+// Post-process marked output: wrap ASCII art (box-drawing chars) in <pre>.
+const BOX_RE = /[┌┐└┘├┤┬┴┼│━─]/;
+function renderMarkdown(text) {
+  if (!text) return "";
+  let html = marked.parse(text);
+  html = html.replace(/<pre><code>([\s\S]*?)<\/code><\/pre>/gi, (match, inner) => {
+    const decoded = inner.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+    return BOX_RE.test(decoded) ? `<pre class="ascii-art">${decoded}</pre>` : match;
+  });
+  html = html.replace(/<p>([\s\S]*?)<\/p>/gi, (match, inner) => {
+    const decoded = inner.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+    return BOX_RE.test(decoded) ? `<pre class="ascii-art">${decoded}</pre>` : match;
+  });
+  return html;
+}
+
 const AGENT_AVATAR_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="rgba(125,211,252,0.9)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
   <rect x="3" y="8" width="18" height="11" rx="2"/>
   <path d="M8 8V6a4 4 0 0 1 8 0v2"/>
@@ -1985,7 +2001,7 @@ function addMessage(role, content, msgIndex) {
   bubble.className = "message-bubble";
   const inner = document.createElement("div");
   inner.className = "markdown-content";
-  inner.innerHTML = marked.parse(content || "");
+  inner.innerHTML = renderMarkdown(content || "");
   bubble.appendChild(inner);
   div.appendChild(bubble);
 
@@ -2031,7 +2047,7 @@ function renderTimeline(container, timeline, shownPlotPaths = null) {
       details.appendChild(summary);
       const body = document.createElement("div");
       body.className = "markdown-content";
-      body.innerHTML = marked.parse(item.text || "");
+      body.innerHTML = renderMarkdown(item.text || "");
       details.appendChild(body);
       container.appendChild(details);
     } else if (item.type === "function_call") {
@@ -2084,7 +2100,7 @@ function renderTimeline(container, timeline, shownPlotPaths = null) {
     } else if (item.type === "text") {
       const div = document.createElement("div");
       div.className = "markdown-content";
-      div.innerHTML = marked.parse(item.text || "");
+      div.innerHTML = renderMarkdown(item.text || "");
       container.appendChild(div);
     }
   }
@@ -2798,21 +2814,23 @@ async function loadSession(sessionId) {
     } catch (_) {}
 
     // Build a unified timeline: events and step cards sorted by timestamp.
+    // Convert event timestamps to ms (ADK stores them as seconds float).
+    // If timestamps are missing or unreliable, fall back to sequential order.
     const timeline = [];
+    let eventTsValid = true;
 
     events.forEach((event, idx) => {
-      // ADK event.timestamp is a float in seconds; convert to ms for comparison
-      // with step card start_time (which is an ISO string → ms via Date.getTime).
       let ts;
       if (event.timestamp) {
         const raw = Number(event.timestamp);
-        ts = raw < 1e12 ? raw * 1000 : raw; // seconds → ms if needed
-      } else if (event.createTime) {
-        ts = new Date(event.createTime).getTime();
+        // Heuristic: values < 1e12 are seconds, >= 1e12 are already ms
+        ts = raw < 1e12 ? raw * 1000 : raw;
+        // Sanity check: timestamp should be between 2020-2100
+        if (ts < 1577836800000 || ts > 4102444800000) eventTsValid = false;
       } else {
-        ts = idx;
+        eventTsValid = false;
       }
-      timeline.push({ type: "event", data: event, ts, order: idx });
+      timeline.push({ type: "event", data: event, ts: ts ?? idx, order: idx });
     });
 
     graphNodes.forEach((node, idx) => {
@@ -2820,8 +2838,11 @@ async function loadSession(sessionId) {
       timeline.push({ type: "step", data: node, ts, order: 1e9 + idx });
     });
 
-    timeline.sort((a, b) => a.ts - b.ts || a.order - b.order);
-
+    // Only sort by timestamp if event timestamps are valid; otherwise
+    // preserve the original order (events first, then step cards).
+    if (eventTsValid && graphNodes.length > 0) {
+      timeline.sort((a, b) => a.ts - b.ts || a.order - b.order);
+    }
 
     // First pass: collect all functionResponses keyed by ID for cross-event matching
     const frById = {};
@@ -3094,14 +3115,17 @@ async function sendMessage(message) {
 
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
+    let lineBuf = "";
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      const chunk = decoder.decode(value);
-      const lines = chunk.split("\n");
+      lineBuf += decoder.decode(value, { stream: true });
+      const lines = lineBuf.split("\n");
+      lineBuf = lines.pop(); // keep the incomplete last line in the buffer
       for (const line of lines) {
-        if (!line.startsWith("data: ")) continue;
-        const dataStr = line.slice(6);
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data: ")) continue;
+        const dataStr = trimmed.slice(6);
         if (dataStr === "[DONE]") continue;
         try {
           const evt = JSON.parse(dataStr);
@@ -3139,6 +3163,24 @@ async function sendMessage(message) {
         } catch (_) {
           // ignore malformed lines
         }
+      }
+    }
+    // Flush remaining data in the line buffer
+    if (lineBuf.trim().startsWith("data: ")) {
+      const dataStr = lineBuf.trim().slice(6);
+      if (dataStr !== "[DONE]") {
+        try {
+          const evt = JSON.parse(dataStr);
+          const parts = evt?.content?.parts || [];
+          for (const p of parts) {
+            if (p.thought) upsertTimelineThought(timeline, p.text || "");
+            else if (p.functionCall) upsertTimelineEvent(timeline, { type: "function_call", id: p.functionCall.id, name: p.functionCall.name || "Unknown", args: p.functionCall.args || {} });
+            else if (p.functionResponse) upsertTimelineEvent(timeline, { type: "function_response", id: p.functionResponse.id, name: p.functionResponse.name || "Unknown", response: p.functionResponse.response || {} });
+            else if (p.text) { accText = mergeReplayedText(accText, p.text); upsertTimelineText(timeline, compactRepeatedPrefixSnapshots(accText)); }
+            if (timeline.length > 0 && !timelineContainer) timelineContainer = addAgentTimelineMessage(timeline, shownPlotPaths);
+            else if (timelineContainer) renderTimeline(timelineContainer, timeline, shownPlotPaths);
+          }
+        } catch (_) {}
       }
     }
   } catch (err) {

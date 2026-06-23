@@ -7,6 +7,7 @@
   --accent-2: #60a5fa;
   --border: rgba(255, 255, 255, 0.08);
   --radius: 16px;
+  --mono: 'DejaVu Sans Mono', 'Liberation Mono', 'Noto Sans Mono', 'Cascadia Mono', 'Fira Code', 'JetBrains Mono', 'Consolas', 'Menlo', monospace;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -558,6 +559,66 @@ details.step-feed-nested {
 
 .markdown-content { padding: 12px 14px; border-radius: 12px; line-height: 1.6; font-size: 14px; }
 .markdown-content a { color: var(--accent); text-decoration: none; font-weight: 600; }
+.markdown-content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.markdown-content thead {
+  background: rgba(125, 211, 252, 0.08);
+}
+.markdown-content th {
+  text-align: left;
+  padding: 8px 12px;
+  font-weight: 600;
+  color: var(--text);
+  border-bottom: 2px solid var(--border);
+  white-space: nowrap;
+}
+.markdown-content td {
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  color: var(--text);
+}
+.markdown-content tr:last-child td {
+  border-bottom: none;
+}
+.markdown-content tr:hover td {
+  background: rgba(255, 255, 255, 0.03);
+}
+.markdown-content pre {
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 4px 0;
+  overflow-x: auto;
+}
+.markdown-content pre code {
+  font-family: var(--mono, monospace);
+  font-size: 13px;
+  line-height: 1;
+  white-space: pre;
+  background: none;
+  padding: 0;
+}
+.markdown-content .ascii-art {
+  font-family: var(--mono, monospace);
+  font-size: 13px;
+  line-height: 1;
+  white-space: pre;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 4px 0;
+  overflow-x: auto;
+  font-variant-ligatures: none;
+  font-feature-settings: "calt" 0, "liga" 0, "kern" 0;
+  letter-spacing: 0;
+}
 
 .input-area { padding: 10px 16px 16px; border-top: 1px solid var(--border); background: rgba(12, 17, 27, 0.9); }
 .upload-status {
@@ -1006,8 +1067,8 @@ details[open] > .tree-dir-summary::before { transform: rotate(90deg); }
   padding: 8px;
   margin: 4px 0 0;
   overflow-x: auto;
-  white-space: pre-wrap;
-  word-break: break-all;
+  white-space: pre;
+  word-break: normal;
   color: var(--muted);
 }
 details.timeline-thought,
