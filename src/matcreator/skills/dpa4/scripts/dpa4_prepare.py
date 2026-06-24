@@ -242,6 +242,11 @@ def _ase_to_labeled(atoms: Atoms) -> dpdata.LabeledSystem:
     names = list(dict.fromkeys(symbols))
     numbs = [symbols.count(n) for n in names]
     types = np.array([names.index(s) for s in symbols], dtype=int)
+    if "virial" not in atoms.arrays:
+        raise ValueError(
+            "Virial data is required but not found in structure. "
+            "All structures must have energy, forces, and virial labels from DFT."
+        )
     data: Dict[str, Any] = {
         "atom_names": names,
         "atom_numbs": numbs,
@@ -252,9 +257,8 @@ def _ase_to_labeled(atoms: Atoms) -> dpdata.LabeledSystem:
         "nopbc": not np.any(atoms.get_pbc()),
         "energies": np.array([atoms.get_potential_energy()]),
         "forces": np.array([atoms.get_forces()]),
+        "virial": np.array([atoms.arrays["virial"]]),
     }
-    if "virial" in atoms.arrays:
-        data["virial"] = np.array([atoms.arrays["virial"]])
     return dpdata.LabeledSystem.from_dict({"data": data})
 
 
