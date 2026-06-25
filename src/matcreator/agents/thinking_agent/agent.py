@@ -29,6 +29,7 @@ from .memory import (
     update_memory,
 )
 from ...tools.workspace_tools import (
+    get_user_skills_root,
     init_workspace_tool,
     run_bash,
     run_python
@@ -163,24 +164,6 @@ def resume_execution(tool_context: ToolContext) -> dict:
     }
 
 
-def request_skill_testing(skill_or_description: str, tool_context: ToolContext) -> dict:
-    """Request the tester agent to create or validate a skill.
-
-    Call this when the user asks to create a new skill or test an existing one.
-    The orchestrator will delegate to the tester agent on the next routing decision.
-
-    Args:
-        skill_or_description: Name of an existing skill to test, or a description
-            of the new skill to create (e.g. "a skill for VASP band structure calculation").
-    """
-    tool_context.state["testing_requested"] = True
-    tool_context.state["tester_request"] = skill_or_description
-    return {
-        "status": "ok",
-        "message": f"Skill testing requested: {skill_or_description}",
-    }
-
-
 # ---------------------------------------------------------------------------
 # Mode helper
 # ---------------------------------------------------------------------------
@@ -249,12 +232,14 @@ You are MatCreator, an AI assistant for computational materials science.
 - Call `search_skills` / `load_skill` to discover or load a skill.
 - Use `query_knowledge_graph` to retrieve L1/L2 planning knowledge and past memory.
 - After selecting a skill, call `search_skill_context` for its attached L3/L4 details.
+- For skill creation or evaluation requests, load the `skill-creation` guide and
+  call `run_flash_step` with `suggested_skills=["skill-creation"]`.
 - After completing work, call `save_to_knowledge_graph` to persist key findings.
 - Use `chat_with_knowledge_graph` when the user wants to inspect or update the Know-Do Graph directly.
 
 ## Rules
 - Be concise and responsive.
-- Do NOT call `validate_graph`, `confirm_plan_and_start_execution`, or `request_skill_testing`.
+- Do NOT call `validate_graph` or `confirm_plan_and_start_execution`.
 - Quote exact error messages and propose concrete solutions when something fails.
 """
 
@@ -279,7 +264,11 @@ Your role here is **PLANNING ONLY**: you are responsible only for planning; all 
    **Node ID | Label | Action | Depends On**
    (where "Depends On" lists predecessor node IDs, or "—" for root nodes).
 {confirmation_instruction}
-4. If the user asks to create or test a skill, call `request_skill_testing(description)`.
+4. If the user asks to create or test a skill:
+   a. Call `search_skills` / `load_skill` for the `skill-creation` guide.
+   b. Create a normal execution graph node with `suggested_skills=["skill-creation"]`.
+   c. The node action must say that generated skills belong under the user skills root
+      returned by `get_user_skills_root`, not under the workspace skills directory.
 5. After completing a node, use `save_to_knowledge_graph` to persist key lessons or findings.
 6. Once execution has fully completed, call `write_session_summary` with the global narrative.
 7. When the user requests direct Know-Do Graph interaction, call
@@ -315,7 +304,6 @@ Your role here is **PLANNING ONLY**: you are responsible only for planning; all 
 
 ## Rules
 - NEVER execute plan nodes.
-- For skill creation/testing requests, always call `request_skill_testing` before responding.
 - Keep responses concise; reference absolute file paths where relevant.
 - When you encounter an error, quote the exact message and propose concrete solutions.
 - You may call `run_synthesizer` when the knowledge graph seems stale or after heavy knowledge accumulation.
@@ -400,7 +388,6 @@ thinking_agent = LlmAgent(
         FunctionTool(write_session_summary),
         FunctionTool(confirm_plan_and_start_execution),
         FunctionTool(resume_execution),
-        FunctionTool(request_skill_testing),
         FunctionTool(search_skills),
         FunctionTool(search_skill_context),
         FunctionTool(get_related_skills),
@@ -412,6 +399,7 @@ thinking_agent = LlmAgent(
         FunctionTool(update_memory),
         FunctionTool(init_workspace_tool),
         FunctionTool(refresh_skills),
+        FunctionTool(get_user_skills_root),
         FunctionTool(run_python),
         FunctionTool(run_bash),
         FunctionTool(run_flash_step),

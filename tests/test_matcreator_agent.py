@@ -84,9 +84,6 @@ class TestMatCreatorImports(unittest.TestCase):
     def test_execution_agent(self):
         self._assertImportable("matcreator.agents.execution_agent")
 
-    def test_tester_agent(self):
-        self._assertImportable("matcreator.agents.tester_agent")
-
     # ── Top-level package ─────────────────────────────────────────────────────
 
     def test_top_level_exports_app(self):

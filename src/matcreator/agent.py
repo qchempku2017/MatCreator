@@ -6,7 +6,6 @@ and resumability.
 Routing (per user invocation):
   1. Planning   — thinking_agent understands the goal, builds a plan, asks confirmation.
   2. Execution  — execution_agent runs each plan step (one step per sub-invocation).
-  3. Testing    — tester_agent creates/validates skills when requested.
 """
 
 import os
@@ -19,7 +18,6 @@ from google.adk.models.lite_llm import LiteLlm
 
 from .agents.thinking_agent import thinking_agent
 from .agents.execution_agent import execution_agent
-from .agents.tester_agent import tester_agent
 from .agents.orchestrator.agent import PlanningExecutionOrchestrator
 from .constants import LLM_MODEL, LLM_API_KEY, LLM_BASE_URL
 
@@ -42,7 +40,6 @@ orchestrator = PlanningExecutionOrchestrator(
     name="MatCreator",
     planning_agent=thinking_agent,
     execution_agent=execution_agent,
-    tester_agent=tester_agent,
 )
 
 app = App(

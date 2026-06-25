@@ -47,10 +47,15 @@ _MODULE_SKILLS_ROOT = Path(__file__).parent / "skills"
 _USER_SKILLS_ROOT = Path.home() / ".matcreator" / "skills"
 
 
+def user_skills_dir() -> Path:
+    """Return the user-global ADK skill root."""
+    return _USER_SKILLS_ROOT
+
+
 def _skill_dir_map() -> dict[str, Path]:
     """Map loaded skill names to their backing directories."""
     mapping: dict[str, Path] = {}
-    for root in [_MODULE_SKILLS_ROOT, workspace_skills_dir()]:
+    for root in [_MODULE_SKILLS_ROOT, user_skills_dir(), workspace_skills_dir()]:
         for path in _discover_skill_dirs(root):
             mapping.setdefault(path.name, path)
     return mapping
@@ -90,7 +95,7 @@ def load_skills() -> list:
             skills.append(load_skill_from_dir(path))
         except Exception as exc:
             logger.error("Failed to load default skill '%s', skipping: %s", path.name, exc)
-    for path in _discover_skill_dirs(_USER_SKILLS_ROOT):
+    for path in _discover_skill_dirs(user_skills_dir()):
         if path.name in default_names:
             logger.warning(
                 "User skill '%s' in ~/.matcreator/skills conflicts with a bundled skill and will be ignored.",
@@ -123,7 +128,7 @@ _PLANNING_CATEGORIES = frozenset({"concepts", "guides"})
 
 def _build_planning_skill_names() -> frozenset[str]:
     names: set[str] = set()
-    for root in [_MODULE_SKILLS_ROOT, _USER_SKILLS_ROOT, workspace_skills_dir()]:
+    for root in [_MODULE_SKILLS_ROOT, user_skills_dir(), workspace_skills_dir()]:
         for path in _discover_skill_dirs(root):
             if path.parent.name in _PLANNING_CATEGORIES:
                 names.add(path.name)

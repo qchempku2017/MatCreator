@@ -3,11 +3,10 @@
 Every invocation runs a planning-first loop:
 
   1. Planning phase  — always runs first. planning_agent (thinking_agent) handles
-                       user intent and sets one of two routing flags:
-                         • state["execution_approved"] = True  → execution phase
-                         • state["testing_requested"]  = True  → testing phase
-                       If neither flag is set the turn was conversational; the loop
-                       exits and control returns to the user.
+                       user intent and sets state["execution_approved"] = True
+                       when the user-approved DAG should run. If the flag is not
+                       set the turn was conversational; the loop exits and control
+                       returns to the user.
 
   2. Execution phase — delegates the full plan to execution_agent (an LlmAgent that
                        spawns isolated step_executor sub-agents and may run steps in
@@ -16,8 +15,6 @@ Every invocation runs a planning-first loop:
                        After all steps complete (or on early exit), loops back to
                        the planning phase within the same invocation.
 
-  3. Testing phase   — delegates to tester_agent for skill creation/validation, then
-                       loops back to the planning phase.
 """
 
 from __future__ import annotations
@@ -25,14 +22,13 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator
 
 from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event
-from pydantic import Field
 
-from ...workspace import init_session_workdir, WORKSPACE_ROOT
+from ...workspace import get_workspace_root, init_session_workdir
 from ..graph_logger import AgentGraphLogger
 from ..cancellation import clear_cancellation
 from ...knowledge.extractor import run_knowledge_extractor
@@ -86,12 +82,10 @@ class PlanningExecutionOrchestrator(BaseAgent):
     Attributes:
         planning_agent: Handles user intent, plan creation, and approval signalling.
         execution_agent: Executes one plan step at a time (skill load + tool calls).
-        tester_agent: Creates and validates skills on demand (optional).
     """
 
     planning_agent: BaseAgent
     execution_agent: BaseAgent
-    tester_agent: Optional[BaseAgent] = Field(default=None)
 
     async def _run_async_impl(
         self, ctx: InvocationContext
@@ -103,7 +97,7 @@ class PlanningExecutionOrchestrator(BaseAgent):
             if custom_workdir and os.environ.get("MATCREATOR_MODE") == "server":
                 try:
                     candidate = Path(custom_workdir).expanduser().resolve()
-                    if not candidate.is_relative_to(WORKSPACE_ROOT):
+                    if not candidate.is_relative_to(get_workspace_root()):
                         logger.warning("[orchestrator] custom_workdir %s rejected (outside WORKSPACE_ROOT); using default", custom_workdir)
                         custom_workdir = None
                 except Exception:
@@ -130,24 +124,12 @@ class PlanningExecutionOrchestrator(BaseAgent):
                 yield event
             graph.log_node_complete(planning_id, "success")
 
-            # Flash mode: thinking agent handles everything; skip execution/testing phases
+            # Flash mode: thinking agent handles everything; skip execution phase
             if _get_agent_mode(state) == "flash":
                 graph.log_node_complete("orchestrator", "success")
                 break
 
-            testing_requested: bool = state.get("testing_requested", False)
             execution_approved: bool = state.get("execution_approved", False)
-
-            # ── Testing phase ─────────────────────────────────────────────────
-            if testing_requested and self.tester_agent is not None:
-                tester_id = f"tester_{loop_idx}" if has_execution else "tester_0"
-                logger.info("[orchestrator] entering testing phase")
-                graph.log_node_start(tester_id, "tester", f"Testing {loop_idx + 1}", "orchestrator")
-                async for event in self.tester_agent.run_async(ctx):
-                    yield event
-                graph.log_node_complete(tester_id, "success")
-                state["testing_requested"] = False
-                continue  # loop back to planner
 
             # ── Execution phase ───────────────────────────────────────────────
             if execution_approved:

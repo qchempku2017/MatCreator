@@ -16,7 +16,7 @@ from ...skill import ALL_SKILLS_TOOLSET
 from ...knowledge.query import get_related_skills, search_skill_context, search_skills
 from ...tools.remoteagent_tool import load_remote_a2a_agents
 from ...tools.util_tools import show_artifact, show_plot, show_structure
-from ...tools.workspace_tools import run_bash, run_python
+from ...tools.workspace_tools import get_user_skills_root, run_bash, run_python
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +100,8 @@ If `submit_step_result` returns a validation error, fix the fields and call it a
 
 ## Execution rules
 - Work inside `workspace_dir` for all file operations.
+- Exception: when the loaded `skill-creation` guide requires authoring a reusable
+  user skill, call `get_user_skills_root` and write only inside that returned root.
 - Use `run_python` or `run_bash` for computation. Do not fabricate outputs.
 - Include ALL generated files with their absolute paths in `artifacts`.
 - Do not retry indefinitely on failure — call `submit_step_result` with needs_replanning.
@@ -210,6 +212,7 @@ step_executor_agent = LlmAgent(
         FunctionTool(search_skills),
         FunctionTool(search_skill_context),
         FunctionTool(get_related_skills),
+        FunctionTool(get_user_skills_root),
         FunctionTool(run_python),
         FunctionTool(run_bash),
         ALL_SKILLS_TOOLSET,

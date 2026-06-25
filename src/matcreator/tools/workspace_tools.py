@@ -1,7 +1,8 @@
 """Workspace authoring tools for the thinking_agent.
 
-These tools allow the agent to create and manage skills under the project
-workspace directory ($MATCLAW_WORKSPACE or ./.workspace).
+These tools allow the agent to create and manage files under the project
+workspace directory ($MATCLAW_WORKSPACE or ./.workspace), and to discover the
+user-global skill root for reusable ADK skill authoring.
 
 Security contract
 -----------------
@@ -124,6 +125,18 @@ def list_workspace_skills() -> str:
     if not lines:
         return "Workspace skills directory is empty."
     return "Workspace skills:\n" + "\n".join(lines)
+
+
+def get_user_skills_root() -> str:
+    """Return the absolute user-global ADK skills directory.
+
+    Agents use this path when authoring reusable skills. File writes still go
+    through general execution tools; the caller must keep generated files under
+    this root and reject path traversal.
+    """
+    from ..skill import user_skills_dir
+
+    return str(user_skills_dir().expanduser().resolve())
 
 
 # ---------------------------------------------------------------------------
@@ -337,15 +350,17 @@ async def run_skill_script(
         Combined stdout and stderr output, truncated to 4 000 characters.
     """
     from ..workspace import workspace_skills_dir
-    from ..skill import _MODULE_SKILLS_ROOT
+    from ..skill import _MODULE_SKILLS_ROOT, user_skills_dir
 
     script_path = _resolve_skill_script_path(workspace_skills_dir(), skill_name, script_name)
+    if script_path is None:
+        script_path = _resolve_skill_script_path(user_skills_dir(), skill_name, script_name)
     if script_path is None:
         script_path = _resolve_skill_script_path(_MODULE_SKILLS_ROOT, skill_name, script_name)
     if script_path is None:
         return (
             f"Script not found for skill '{skill_name}': scripts/{script_name}\n"
-            f"Searched under: {workspace_skills_dir()} and {_MODULE_SKILLS_ROOT}\n"
+            f"Searched under: {workspace_skills_dir()}, {user_skills_dir()}, and {_MODULE_SKILLS_ROOT}\n"
             f"Ensure the skill has a scripts/{script_name} file."
         )
 
