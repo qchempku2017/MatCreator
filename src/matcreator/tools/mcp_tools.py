@@ -6,19 +6,28 @@ server endpoints are probed via TCP before inclusion so that unavailable
 servers are skipped gracefully.
 """
 
-# Tools configuration 
+# Tools configuration
 import socket
 import logging
 from urllib.parse import urlparse
 from google.adk.tools.mcp_tool import McpToolset
 from google.adk.tools.mcp_tool.mcp_session_manager import SseServerParams
+from matcreator.ports import get_mcp_endpoint_url
+
+
+def _parse_url_host_port(url: str) -> tuple[str, int]:
+    """Extract (host, port) from a URL string without any network I/O.
+
+    Pure helper that can be tested without TCP probing.
+    Returns hostname (defaults to ``"localhost"``) and port (defaults to 80).
+    """
+    parsed = urlparse(url)
+    return parsed.hostname or "localhost", parsed.port or 80
 
 
 def _is_sse_server_active(url: str, timeout: float = 2.0) -> bool:
     """Probe host:port via TCP; return True if the server is reachable."""
-    parsed = urlparse(url)
-    host = parsed.hostname or "localhost"
-    port = parsed.port or 80
+    host, port = _parse_url_host_port(url)
     try:
         with socket.create_connection((host, port), timeout=timeout):
             return True
@@ -31,7 +40,7 @@ def _is_sse_server_active(url: str, timeout: float = 2.0) -> bool:
 MCP_TOOLSETS = []
 
 # Database toolset
-_url = "http://localhost:50001/sse"
+_url = get_mcp_endpoint_url("database")
 if _is_sse_server_active(_url):
     MCP_TOOLSETS.append(
         McpToolset(
@@ -43,7 +52,7 @@ if _is_sse_server_active(_url):
     )
 
 # DPA toolset
-_url = "http://localhost:50002/sse"
+_url = get_mcp_endpoint_url("dpa")
 if _is_sse_server_active(_url):
     MCP_TOOLSETS.append(
         McpToolset(
@@ -55,7 +64,7 @@ if _is_sse_server_active(_url):
     )
 
 # STRUCTURE toolset
-_url = "http://localhost:50004/sse"
+_url = get_mcp_endpoint_url("structure")
 if _is_sse_server_active(_url):
     MCP_TOOLSETS.append(
         McpToolset(
@@ -67,7 +76,7 @@ if _is_sse_server_active(_url):
     )
 
 # ABACUS toolset
-_url = "http://localhost:50003/sse"
+_url = get_mcp_endpoint_url("abacus")
 if _is_sse_server_active(_url):
     MCP_TOOLSETS.append(
         McpToolset(
@@ -79,7 +88,7 @@ if _is_sse_server_active(_url):
     )
 
 # VASP toolset
-_url = "http://localhost:50005/sse"
+_url = get_mcp_endpoint_url("vasp")
 if _is_sse_server_active(_url):
     MCP_TOOLSETS.append(
         McpToolset(
@@ -98,7 +107,7 @@ if _is_sse_server_active(_url):
     )
 
 # MatterGen toolset
-_url = "http://localhost:50006/sse"
+_url = get_mcp_endpoint_url("mattergen")
 if _is_sse_server_active(_url):
     MCP_TOOLSETS.append(
         McpToolset(

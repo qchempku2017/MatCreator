@@ -65,3 +65,70 @@ Logs are written to `~/.matcreator/logs/{api-server,web-main,vite}.log` by defau
 | ADK sessions and graph database | `~/.matcreator/.adk/` |
 | Workspace artifacts | selected `--workspace` directory |
 | Local logs | `~/.matcreator/logs/` |
+
+## Port Configuration
+
+MatCreator services use these default ports:
+
+| Service | Default Port | Environment Variable |
+|---------|-------------|---------------------|
+| ADK API Server | 8000 | `MATCREATOR_ADK_PORT` |
+| FastAPI Middle Layer | 8001 | `MATCREATOR_WEB_PORT` |
+| Vite Frontend | 5173 | `MATCREATOR_FRONTEND_PORT` |
+| MCP Database | 50001 | `MATCREATOR_MCP_DATABASE_PORT` |
+| MCP DPA | 50002 | `MATCREATOR_MCP_DPA_PORT` |
+| MCP ABACUS | 50003 | `MATCREATOR_MCP_ABACUS_PORT` |
+| MCP Structure | 50004 | `MATCREATOR_MCP_STRUCTURE_PORT` |
+| MCP VASP | 50005 | `MATCREATOR_MCP_VASP_PORT` |
+| MCP MatterGen | 50006 | `MATCREATOR_MCP_MATTERGEN_PORT` |
+
+To change ports, set environment variables before starting:
+
+```bash
+export MATCREATOR_ADK_PORT=8100
+export MATCREATOR_WEB_PORT=8101
+export MATCREATOR_FRONTEND_PORT=5174
+bash script/start_matcreator.sh
+```
+
+### Running alongside Hermes (or other agent systems)
+
+If you need to avoid port conflicts with Hermes or other local services, configure alternative ports:
+
+```bash
+MATCREATOR_ADK_PORT=8100
+MATCREATOR_WEB_PORT=8101
+MATCREATOR_FRONTEND_PORT=5174
+MATCREATOR_MCP_DATABASE_PORT=51001
+MATCREATOR_MCP_DPA_PORT=51002
+MATCREATOR_MCP_ABACUS_PORT=51003
+MATCREATOR_MCP_STRUCTURE_PORT=51004
+MATCREATOR_MCP_VASP_PORT=51005
+MATCREATOR_MCP_MATTERGEN_PORT=51006
+bash script/start_matcreator.sh
+```
+
+Ports can also be persisted in `~/.matcreator/config.yaml`:
+
+```yaml
+ports:
+  adk: 8100
+  web: 8101
+  frontend: 5174
+  mcp:
+    database: 51001
+    dpa: 51002
+    abacus: 51003
+    structure: 51004
+    vasp: 51005
+    mattergen: 51006
+```
+
+Or via CLI:
+
+```bash
+matcreator config set ports.adk=8100
+matcreator config set ports.web=8101
+```
+
+Port configuration precedence: environment variables > ~/.matcreator/config.yaml > defaults.
