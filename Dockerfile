@@ -33,8 +33,8 @@ RUN apt-get update && apt-get install -y procps && rm -rf /var/lib/apt/lists/*
 # ENV PMG_VASP_PSP_DIR=/opt/vasp/POT_GGA_PAW_PBE
 # RUN pmg config --add PMG_VASP_PSP_DIR "$PMG_VASP_PSP_DIR"
 
-# Run the bohrctl installation script
-RUN curl -fsSL https://dp-public.oss-cn-beijing.aliyuncs.com/bohrctl/1.0.0/install_bohr_linux_curl.sh | bash
+# Run the bohrctl installation script if you need to submit jobs to a Bohr cluster. Uncomment the following line if you need it.
+# RUN curl -fsSL https://dp-public.oss-cn-beijing.aliyuncs.com/bohrctl/1.0.0/install_bohr_linux_curl.sh | bash
 
 
 ENV PYTHONUNBUFFERED=1
