@@ -64,7 +64,7 @@ import yaml
 
 import click
 
-from matcreator.ports import get_adk_port
+from matcreator.ports import get_adk_host, get_adk_port
 
 
 _MATCREATOR_HOME = Path(os.environ.get("MATCREATOR_HOME", "~/.matcreator")).expanduser()
@@ -105,7 +105,7 @@ def _make_agent_loader():
 
 
 def _start_adk_server(
-    host: str,
+    host: str | None,
     port: int | None,
     log_level: str,
     web_ui: bool,
@@ -113,6 +113,8 @@ def _start_adk_server(
     reload: bool = False,
 ) -> None:
     """Start the ADK server programmatically with controlled session storage."""
+    if host is None:
+        host = get_adk_host()
     if port is None:
         port = get_adk_port()
 
@@ -150,8 +152,8 @@ def _start_adk_server(
 
 # Shared options applied to web/api-server subcommands
 _shared_options = [
-    click.option("--host", default="127.0.0.1", show_default=True,
-                 help="Binding host for the ADK server."),
+    click.option("--host", default=None,
+                 help="Binding host for the ADK server (default: resolved from config/MATCREATOR_ADK_HOST env)."),
     click.option("--port", type=int, default=None,
                  help="Port for the ADK server (default: resolved from config/MATCREATOR_ADK_PORT env)."),
     click.option("--workspace", default=None, metavar="DIR",

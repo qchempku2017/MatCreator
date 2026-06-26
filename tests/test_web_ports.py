@@ -14,6 +14,8 @@ Key assertions:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from src.matcreator.ports import (
@@ -23,7 +25,7 @@ from src.matcreator.ports import (
     get_worker_base_port,
 )
 
-from conftest import ALL_PORT_ENV_VARS, clear_port_env_vars  # noqa: F401
+from conftest import ALL_CONFIG_ENV_VARS, clear_port_env_vars  # noqa: F401
 
 
 # ===================================================================
@@ -60,12 +62,17 @@ def test_web_layer_ports_combined(monkeypatch) -> None:
 # is stable for the web layer's subprocess invocation.
 
 
-def test_get_local_adk_command_has_correct_format() -> None:
+def test_get_local_adk_command_has_correct_format(
+    monkeypatch, tmp_path: Path
+) -> None:
     """Verify the command list structure: ['matcreator', 'api-server', '--host', <host>, '--port', <port>].
 
-    This test does not monkeypatch env vars -- it checks the structure using the
-    default port and a custom host to prove the format is invariant.
+    Uses monkeypatch to isolate host resolution from the real OS environment,
+    ensuring the test passes regardless of any ``MATCREATOR_ADK_HOST`` env var
+    set in the developer's shell.
     """
+    clear_port_env_vars(monkeypatch)
+    monkeypatch.setenv("MATCREATOR_HOME", str(tmp_path))
     cmd = get_local_adk_command()
     assert len(cmd) == 6
     assert cmd[0] == "matcreator"

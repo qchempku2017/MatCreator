@@ -19,7 +19,7 @@ from src.matcreator.ports import (
     load_ports_config,
 )
 
-from conftest import ALL_PORT_ENV_VARS, clear_port_env_vars  # noqa: F401
+from conftest import ALL_CONFIG_ENV_VARS, clear_port_env_vars  # noqa: F401
 
 
 def _write_config_yaml(config_dir: Path, ports: dict) -> Path:
@@ -354,6 +354,9 @@ def test_ports_config_dataclass(monkeypatch, tmp_path: Path) -> None:
     assert config.server_proxy == 80
     assert config.worker_base == 9001
     assert config.mcp_host == "localhost"
+    assert config.adk_host == "127.0.0.1"
+    assert config.web_host == "127.0.0.1"
+    assert config.frontend_host == "127.0.0.1"
     assert config.mcp_database == 50001
     assert config.mcp_dpa == 50002
     assert config.mcp_abacus == 50003

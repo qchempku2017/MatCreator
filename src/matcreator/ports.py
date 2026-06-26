@@ -23,6 +23,9 @@ The ``ports`` section of the YAML file is read:
       server_proxy: 8080
       worker_base: 9101
       mcp_host: localhost
+      adk_host: 0.0.0.0
+      web_host: 0.0.0.0
+      frontend_host: 0.0.0.0
       mcp:
         database: 51001
         dpa: 51002
@@ -63,6 +66,9 @@ _DEFAULTS: dict[str, int | str] = {
     "mcp_structure": 50004,
     "mcp_vasp": 50005,
     "mcp_mattergen": 50006,
+    "adk_host": "127.0.0.1",
+    "web_host": "127.0.0.1",
+    "frontend_host": "127.0.0.1",
 }
 
 # ---------------------------------------------------------------------------
@@ -82,6 +88,9 @@ _ENV_VAR_MAP: dict[str, str] = {
     "mcp_structure": "MATCREATOR_MCP_STRUCTURE_PORT",
     "mcp_vasp": "MATCREATOR_MCP_VASP_PORT",
     "mcp_mattergen": "MATCREATOR_MCP_MATTERGEN_PORT",
+    "adk_host": "MATCREATOR_ADK_HOST",
+    "web_host": "MATCREATOR_WEB_HOST",
+    "frontend_host": "MATCREATOR_FRONTEND_HOST",
 }
 
 # Full URL overrides for MCP endpoints (endpoint name -> env var name)
@@ -193,6 +202,37 @@ def _validate_port(value: Any, name: str) -> int:
     return port
 
 
+def _validate_host(value: str, name: str) -> str:
+    """Validate that *value* is a non-empty host string with no illegal characters.
+
+    This is a lightweight sanity check (not a full hostname/IP parser).  It
+    catches common misconfigurations such as empty strings, whitespace, or
+    shell metacharacters that would cause cryptic failures in socket binding.
+
+    Args:
+        value: The raw host value to validate.
+        name: Human-readable name used in error messages.
+
+    Returns:
+        The trimmed host string.
+
+    Raises:
+        ValueError: If the value is empty or contains illegal characters.
+    """
+    cleaned = value.strip()
+    if not cleaned:
+        raise ValueError(
+            f"Host for {name!r} must not be empty."
+        )
+    illegal = (' ', '\t', '\n', '\r', '$', '`', ';', '&', '|', '<', '>')
+    for char in illegal:
+        if char in cleaned:
+            raise ValueError(
+                f"Host for {name!r} contains illegal character {char!r}: {cleaned!r}"
+            )
+    return cleaned
+
+
 # ---------------------------------------------------------------------------
 # Resolution helpers
 # ---------------------------------------------------------------------------
@@ -244,22 +284,26 @@ def _resolve_port_value(name: str, config_file_key: str) -> int:
 
 
 def _resolve_string_value(name: str, config_file_key: str) -> str:
-    """Resolve a string config value (e.g. ``mcp_host``) using env > config > default."""
+    """Resolve a string config value (e.g. ``mcp_host``) using env > config > default.
+
+    For host-like values the result is validated by :func:`_validate_host`.
+    """
     # 1. Environment variable
     env_name = _ENV_VAR_MAP.get(name)
     if env_name:
         env_value = _resolve_env_var(env_name)
         if env_value is not None:
-            return str(env_value)
+            return _validate_host(str(env_value), name)
 
     # 2. Config file
     config_value = _get_config_file_value(config_file_key)
     if config_value is not None:
-        return str(config_value)
+        return _validate_host(str(config_value), name)
 
     # 3. Default
     default = _DEFAULTS.get(name)
-    return str(default) if default is not None else "localhost"
+    fallback = str(default) if default is not None else "localhost"
+    return _validate_host(fallback, name)
 
 
 # ---------------------------------------------------------------------------
@@ -270,8 +314,10 @@ def _resolve_string_value(name: str, config_file_key: str) -> str:
 class PortsConfig:
     """Immutable snapshot of all resolved port configuration values.
 
-    Every port field is a validated integer in the range 1–65535
-    (``mcp_host`` is a string).
+    Integer port fields are validated to be in the range 1–65535.
+    Host string fields (``mcp_host``, ``adk_host``, ``web_host``,
+    ``frontend_host``) are validated to be non-empty and free of
+    illegal characters.
     """
 
     adk: int
@@ -291,6 +337,15 @@ class PortsConfig:
 
     mcp_host: str
     """Hostname or IP used to construct MCP endpoint URLs (default: localhost)."""
+
+    adk_host: str
+    """Binding host for the ADK API server (default: 127.0.0.1)."""
+
+    web_host: str
+    """Binding host for the FastAPI web / control-plane server (default: 127.0.0.1)."""
+
+    frontend_host: str
+    """Binding host for the Vite frontend dev-server (default: 127.0.0.1)."""
 
     mcp_database: int
     """Database MCP server port (default: 50001)."""
@@ -329,6 +384,9 @@ def load_ports_config() -> PortsConfig:
         server_proxy=_resolve_port_value("server_proxy", "server_proxy"),
         worker_base=_resolve_port_value("worker_base", "worker_base"),
         mcp_host=_resolve_string_value("mcp_host", "mcp_host"),
+        adk_host=_resolve_string_value("adk_host", "adk_host"),
+        web_host=_resolve_string_value("web_host", "web_host"),
+        frontend_host=_resolve_string_value("frontend_host", "frontend_host"),
         mcp_database=_resolve_port_value("mcp_database", "mcp.database"),
         mcp_dpa=_resolve_port_value("mcp_dpa", "mcp.dpa"),
         mcp_abacus=_resolve_port_value("mcp_abacus", "mcp.abacus"),
@@ -361,6 +419,21 @@ def get_server_proxy_port() -> int:
 def get_worker_base_port() -> int:
     """Return the resolved worker base port."""
     return _resolve_port_value("worker_base", "worker_base")
+
+
+def get_adk_host() -> str:
+    """Return the resolved binding host for the ADK API server."""
+    return _resolve_string_value("adk_host", "adk_host")
+
+
+def get_web_host() -> str:
+    """Return the resolved binding host for the FastAPI web server."""
+    return _resolve_string_value("web_host", "web_host")
+
+
+def get_frontend_host() -> str:
+    """Return the resolved binding host for the Vite frontend dev-server."""
+    return _resolve_string_value("frontend_host", "frontend_host")
 
 
 def get_mcp_endpoint_url(name: str) -> str:
@@ -403,15 +476,18 @@ def get_mcp_endpoint_url(name: str) -> str:
     return f"http://{host}:{port}/sse"
 
 
-def get_local_adk_command(host: str = "127.0.0.1") -> list[str]:
+def get_local_adk_command(host: str | None = None) -> list[str]:
     """Return the command list for starting the ADK API server locally.
 
     Args:
-        host: The binding host address.  Defaults to ``127.0.0.1``.
+        host: The binding host address.  When ``None``, resolved via
+            :func:`get_adk_host` (env > config > default).
 
     Returns:
         A list of command-line tokens, e.g.
         ``["matcreator", "api-server", "--host", "127.0.0.1", "--port", "8000"]``.
     """
     port = get_adk_port()
+    if host is None:
+        host = get_adk_host()
     return ["matcreator", "api-server", "--host", host, "--port", str(port)]

@@ -14,7 +14,7 @@ import pytest
 from src.matcreator.ports import get_mcp_endpoint_url
 
 
-from conftest import ALL_PORT_ENV_VARS, clear_port_env_vars  # noqa: F401
+from conftest import ALL_CONFIG_ENV_VARS, clear_port_env_vars  # noqa: F401
 
 
 # ===================================================================

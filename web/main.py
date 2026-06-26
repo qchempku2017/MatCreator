@@ -2084,7 +2084,7 @@ async def restart_backend(user_id: str = Query(default="")) -> JSONResponse:
 
     try:
         _adk_process = subprocess.Popen(
-            get_local_adk_command("127.0.0.1"),
+            get_local_adk_command(),
             cwd=str(ROOT),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

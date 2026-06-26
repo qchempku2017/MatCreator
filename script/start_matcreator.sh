@@ -9,14 +9,43 @@ LOG_DIR="${LOG_DIR/#\~/$HOME}"
 mkdir -p "$LOG_DIR"
 
 # Configurable host/port variables
-MATCREATOR_ADK_HOST="${MATCREATOR_ADK_HOST:-127.0.0.1}"
-MATCREATOR_ADK_PORT="${MATCREATOR_ADK_PORT:-8000}"
-MATCREATOR_WEB_HOST="${MATCREATOR_WEB_HOST:-127.0.0.1}"
-MATCREATOR_WEB_PORT="${MATCREATOR_WEB_PORT:-8001}"
-MATCREATOR_FRONTEND_HOST="${MATCREATOR_FRONTEND_HOST:-127.0.0.1}"
-MATCREATOR_FRONTEND_PORT="${MATCREATOR_FRONTEND_PORT:-5173}"
+
+# Pre-flight: verify that matcreator is importable in the current Python
+# environment before attempting resolution.  Without this check, a missing
+# package produces a confusing "unbound variable" error from ``set -u``.
+if ! python -c "from matcreator.ports import get_adk_port" 2>/dev/null; then
+    echo "ERROR: Cannot import matcreator.ports. Is matcreator installed in the current Python environment?" >&2
+    exit 1
+fi
+
+# Hosts and ports are resolved with precedence:
+#   environment variable > ~/.matcreator/config.yaml > built-in default
+# A single Python invocation resolves all values at once for efficiency.
+# Variables are read via a safe KEY=VALUE loop (no eval) to avoid
+# injection risk from config.yaml values containing shell metacharacters.
+while IFS='=' read -r key value; do
+    printf -v "$key" '%s' "$value"
+done < <(python -c "
+from matcreator.ports import (
+    get_adk_host, get_adk_port,
+    get_web_host, get_web_port,
+    get_frontend_host, get_frontend_port,
+)
+for k, v in (
+    ('MATCREATOR_ADK_HOST', str(get_adk_host())),
+    ('MATCREATOR_ADK_PORT', str(get_adk_port())),
+    ('MATCREATOR_WEB_HOST', str(get_web_host())),
+    ('MATCREATOR_WEB_PORT', str(get_web_port())),
+    ('MATCREATOR_FRONTEND_HOST', str(get_frontend_host())),
+    ('MATCREATOR_FRONTEND_PORT', str(get_frontend_port())),
+):
+    print(f'{k}={v}')
+")
 
 # Export env vars for child processes
+export MATCREATOR_ADK_HOST
+export MATCREATOR_WEB_HOST
+export MATCREATOR_FRONTEND_HOST
 export MATCREATOR_ADK_PORT
 export ADK_LOCAL_PORT="$MATCREATOR_ADK_PORT"
 export MATCREATOR_WEB_PORT
