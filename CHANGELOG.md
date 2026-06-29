@@ -2,6 +2,56 @@
 
 <!-- version list -->
 
+## v2.3.0 (2026-06-29)
+
+### Bug Fixes
+
+- Frontend CLI now support login bash
+  ([`29d3756`](https://github.com/AI4MS/MatCreator/commit/29d3756f201768cc00a7905f7bf211cc3688755c))
+
+- Refactor the frontend
+  ([`7e89724`](https://github.com/AI4MS/MatCreator/commit/7e897246eec58d0992e343856d5842bd1159e105))
+
+- Too many details in search_skills
+  ([`00ee005`](https://github.com/AI4MS/MatCreator/commit/00ee0052408cd97a5692fe6e1c4228a23f004cb8))
+
+- Update docker file
+  ([`fedcd4e`](https://github.com/AI4MS/MatCreator/commit/fedcd4e768076de4b16b99bf828ed5749b2420c4))
+
+- Update dockerfile
+  ([`aab59ba`](https://github.com/AI4MS/MatCreator/commit/aab59ba242dc0d4e6f94a622dca85661f8e3bc05))
+
+### Documentation
+
+- **cli**: Expand help text and add metavar to CLI arguments
+  ([`1b61f50`](https://github.com/AI4MS/MatCreator/commit/1b61f5031048d0e8cc1dc756ba22356f2460fa04))
+
+- **ports**: Document port configuration in deployment guides
+  ([`cd62c9e`](https://github.com/AI4MS/MatCreator/commit/cd62c9e55db555d0d8c91ba717ff433d84cb67e6))
+
+### Features
+
+- Add rounded favicon for browser tab
+  ([`8779245`](https://github.com/AI4MS/MatCreator/commit/8779245003d004178fe3e22a39ccfdda55253d9f))
+
+- **deploy**: Make Docker Compose and nginx ports configurable
+  ([`d6f9333`](https://github.com/AI4MS/MatCreator/commit/d6f933365ddf14ea27c0f6156ac010e1d2143158))
+
+- **ports**: Add centralized port configuration module
+  ([`0060073`](https://github.com/AI4MS/MatCreator/commit/0060073cb2098dee18230038bc647cf06dfec56a))
+
+- **ports**: Add configurable host resolution for core services
+  ([`0b4f885`](https://github.com/AI4MS/MatCreator/commit/0b4f885eae715744b64b563bff3ecba86582d0aa))
+
+- **ports**: Wire port config into application code
+  ([`81b6f23`](https://github.com/AI4MS/MatCreator/commit/81b6f236d0badaf60a24a74a64fe5f2cba8e0be6))
+
+### Testing
+
+- **ports**: Add comprehensive port configuration tests
+  ([`206373d`](https://github.com/AI4MS/MatCreator/commit/206373d527dec3b4e37deb66689c98b18ab7eb28))
+
+
 ## v2.2.0 (2026-06-25)
 
 ### Bug Fixes
