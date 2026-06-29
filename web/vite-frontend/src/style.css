@@ -404,8 +404,19 @@ body {
   border-color: rgba(16, 185, 129, 0.24);
 }
 
+.step-feed-message .message-avatar {
+  display: none;
+}
+
 .step-feed-live-region {
   display: block;
+}
+
+.step-feed-inline-region {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
 }
 
 .step-feed-highlight .message-bubble {

@@ -659,6 +659,7 @@ class StepExecutionFeed {
     this._liveAnchorEl = null;
     this._liveContainerEl = null;
     this._liveStartedAt = null;
+    this._liveToolHostEl = null;
   }
 
   reset() {
@@ -677,6 +678,7 @@ class StepExecutionFeed {
     this._liveContainerEl = document.createElement("div");
     this._liveContainerEl.className = "step-feed-live-region";
     this._liveContainerEl.dataset.stepLiveRegion = "true";
+    this._liveToolHostEl = null;
 
     if (anchorEl && anchorEl.parentNode === chatArea) {
       chatArea.insertBefore(this._liveContainerEl, anchorEl.nextSibling);
@@ -687,10 +689,21 @@ class StepExecutionFeed {
     return this._liveContainerEl;
   }
 
+  attachLiveToolHost(hostEl) {
+    if (!hostEl || this._liveToolHostEl === hostEl) return;
+    this._liveToolHostEl = hostEl;
+    for (const card of this._cards.values()) {
+      if (card.dataset.stepStartTime !== undefined) {
+        hostEl.appendChild(card);
+      }
+    }
+  }
+
   finishLiveTurn() {
     this._liveAnchorEl = null;
     this._liveContainerEl = null;
     this._liveStartedAt = null;
+    this._liveToolHostEl = null;
   }
 
   update(graphData) {
@@ -719,7 +732,10 @@ class StepExecutionFeed {
   }
 
   _activeLiveContainer() {
-    return this._liveContainerEl && chatArea.contains(this._liveContainerEl)
+    if (this._liveToolHostEl && document.body.contains(this._liveToolHostEl)) {
+      return this._liveToolHostEl;
+    }
+    return this._liveContainerEl && this._liveContainerEl.isConnected
       ? this._liveContainerEl
       : null;
   }
@@ -772,6 +788,10 @@ class StepExecutionFeed {
     const liveContainer = this._activeLiveContainer();
     if (liveContainer) {
       this._insertIntoLiveContainer(liveContainer, outer, node);
+      return;
+    }
+    if (state.isSending && this._liveContainerEl) {
+      this._insertIntoLiveContainer(this._liveContainerEl, outer, node);
       return;
     }
     this._insertSorted(outer, node);
@@ -2294,6 +2314,10 @@ function getPlotPaths(response) {
   return paths;
 }
 
+function isExecutorLauncherTool(name) {
+  return ["run_flash_step", "run_node_executor", "run_sub_agent"].includes(name || "");
+}
+
 // Render a typed timeline array into a container element, mirroring
 // Streamlit's render_stream_timeline: thoughts and tool calls go into
 // collapsible <details> blocks; text parts render as markdown;
@@ -2317,11 +2341,23 @@ function renderTimeline(container, timeline, shownPlotPaths = null) {
     } else if (item.type === "function_call") {
       const details = document.createElement("details");
       details.className = "timeline-function-call";
+      if (isExecutorLauncherTool(item.name)) details.open = true;
       const summary = document.createElement("summary");
       summary.innerHTML = `<span class="timeline-badge badge-in">IN</span> ${item.name}`;
       details.appendChild(summary);
       details.appendChild(createJsonBlock(JSON.stringify(item.args, null, 2)));
       container.appendChild(details);
+      if (isExecutorLauncherTool(item.name)) {
+        const inlineHost = document.createElement("div");
+        inlineHost.className = "step-feed-inline-region";
+        inlineHost.dataset.stepInlineHost = item.name;
+        container.appendChild(inlineHost);
+        if (Array.isArray(item.stepNodes) && item.stepNodes.length) {
+          item.stepNodes.forEach((node) => stepExecutionFeed.appendStatic(node, inlineHost));
+        } else if (state.isSending) {
+          stepExecutionFeed.attachLiveToolHost(inlineHost);
+        }
+      }
     } else if (item.type === "function_response") {
       const details = document.createElement("details");
       details.className = "timeline-function-response";
@@ -3061,6 +3097,15 @@ function buildSessionTimeline(events, stepNodes) {
   return timeline;
 }
 
+function assignStepNodesToExecutorCalls(timeline, pendingStepNodes) {
+  for (const item of timeline) {
+    if (item.type !== "function_call" || !isExecutorLauncherTool(item.name)) continue;
+    const nextStep = pendingStepNodes.shift();
+    if (nextStep) item.stepNodes = [nextStep];
+  }
+  return timeline;
+}
+
 function collectFunctionResponsesById(events) {
   const frById = {};
   for (const event of events) {
@@ -3072,7 +3117,7 @@ function collectFunctionResponsesById(events) {
   return frById;
 }
 
-function eventToTimelineParts(event, frById) {
+function eventToTimelineParts(event, frById, pairedResponseIds = new Set()) {
   const parts = event.content?.parts || [];
   const evtTimeline = [];
   let accText = "";
@@ -3090,6 +3135,7 @@ function eventToTimelineParts(event, frById) {
         args: fc.args || {},
       });
       if (matchedFr) {
+        if (matchedFr.id) pairedResponseIds.add(matchedFr.id);
         evtTimeline.push({
           type: "function_response",
           id: matchedFr.id,
@@ -3099,6 +3145,7 @@ function eventToTimelineParts(event, frById) {
       }
     } else if (getFunctionResponse(part)) {
       const fr = getFunctionResponse(part);
+      if (fr.id && pairedResponseIds.has(fr.id)) continue;
       const alreadyMatched = evtTimeline.some(
         (item) => item.type === "function_response" && item.id === fr.id
       );
@@ -3128,18 +3175,17 @@ function renderSessionTimeline(events, stepNodes) {
   chatArea.innerHTML = "";
   stepExecutionFeed.reset();
 
-  const timeline = buildSessionTimeline(events, stepNodes);
+  const sortedEvents = (events || [])
+    .map((event, idx) => ({ event, ts: eventTimestamp(event, idx), order: idx }))
+    .sort((a, b) => a.ts - b.ts || a.order - b.order)
+    .map((item) => item.event);
+  const pendingStepNodes = (stepNodes || []).slice().sort((a, b) => stepNodeTimestamp(a) - stepNodeTimestamp(b));
   const frById = collectFunctionResponsesById(events);
+  const pairedResponseIds = new Set();
   let shownPlotPaths = new Set();
   let msgIdx = 0;
 
-  for (const item of timeline) {
-    if (item.type === "step") {
-      stepExecutionFeed.appendStatic(item.data);
-      continue;
-    }
-
-    const event = item.data;
+  for (const event of sortedEvents) {
     const role = event.author === "user" ? "user" : "agent";
     if (role === "user") {
       const text = displayMessageFromStoredUserText(
@@ -3150,11 +3196,16 @@ function renderSessionTimeline(events, stepNodes) {
       continue;
     }
 
-    const evtTimeline = eventToTimelineParts(event, frById);
+    const evtTimeline = assignStepNodesToExecutorCalls(
+      eventToTimelineParts(event, frById, pairedResponseIds),
+      pendingStepNodes,
+    );
     if (evtTimeline.length > 0) {
       addAgentTimelineMessage(evtTimeline, shownPlotPaths, msgIdx++);
     }
   }
+
+  pendingStepNodes.forEach((node) => stepExecutionFeed.appendStatic(node));
 }
 
 function updateSessionWorkdirDisplay(sessionData) {
@@ -3242,14 +3293,22 @@ function upsertTimelineText(timeline, text) {
   if (text) timeline.push({ type: "text", text });
 }
 
+function timelineEventKey(event) {
+  if (event.id) return `${event.type}:${event.id}`;
+  const payload = event.type === "function_call" ? event.args : event.response;
+  return `${event.type}:${event.name || "Unknown"}:${JSON.stringify(payload || {})}`;
+}
+
 function upsertTimelineEvent(timeline, event) {
-  const { id: eventId, type: eventType } = event;
-  if (eventId) {
-    for (let i = 0; i < timeline.length; i++) {
-      if (timeline[i].type === eventType && timeline[i].id === eventId) {
-        timeline[i] = event;
-        return;
-      }
+  const eventKey = timelineEventKey(event);
+  for (let i = 0; i < timeline.length; i++) {
+    const item = timeline[i];
+    if (
+      (item.type === "function_call" || item.type === "function_response") &&
+      timelineEventKey(item) === eventKey
+    ) {
+      timeline[i] = event;
+      return;
     }
   }
   const last = timeline[timeline.length - 1];
