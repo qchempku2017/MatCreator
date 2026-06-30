@@ -651,9 +651,6 @@ def _query_session_summaries(user_id: str | None = None) -> list[dict]:
 
     where_clause = "WHERE app_name = ?"
     params: tuple[str, ...] = (APP_NAME,)
-    if user_id is not None:
-        where_clause += " AND user_id = ?"
-        params = (APP_NAME, user_id)
 
     try:
         with sqlite3.connect(SESSION_DB_PATH) as conn:
@@ -1399,26 +1396,47 @@ async def get_user_session(user_id: str, session_id: str) -> JSONResponse:
     try:
         with sqlite3.connect(session_db_path) as conn:
             conn.row_factory = sqlite3.Row
-            session = conn.execute(
-                """
-                SELECT app_name, user_id, id, state, create_time, update_time
-                FROM sessions
-                WHERE app_name = ? AND user_id = ? AND id = ?
-                """,
-                (APP_NAME, user_id, session_id),
-            ).fetchone()
+            if _MATCREATOR_MODE == "server":
+                session = conn.execute(
+                    """
+                    SELECT app_name, user_id, id, state, create_time, update_time
+                    FROM sessions
+                    WHERE app_name = ? AND user_id = ? AND id = ?
+                    """,
+                    (APP_NAME, user_id, session_id),
+                ).fetchone()
+            else:
+                session = conn.execute(
+                    """
+                    SELECT app_name, user_id, id, state, create_time, update_time
+                    FROM sessions
+                    WHERE app_name = ? AND id = ?
+                    """,
+                    (APP_NAME, session_id),
+                ).fetchone()
             if session is None:
                 raise HTTPException(status_code=404, detail="Session not found")
 
-            event_rows = conn.execute(
-                """
-                SELECT event_data
-                FROM events
-                WHERE app_name = ? AND user_id = ? AND session_id = ?
-                ORDER BY timestamp ASC
-                """,
-                (APP_NAME, user_id, session_id),
-            ).fetchall()
+            if _MATCREATOR_MODE == "server":
+                event_rows = conn.execute(
+                    """
+                    SELECT event_data
+                    FROM events
+                    WHERE app_name = ? AND user_id = ? AND session_id = ?
+                    ORDER BY timestamp ASC
+                    """,
+                    (APP_NAME, user_id, session_id),
+                ).fetchall()
+            else:
+                event_rows = conn.execute(
+                    """
+                    SELECT event_data
+                    FROM events
+                    WHERE app_name = ? AND session_id = ?
+                    ORDER BY timestamp ASC
+                    """,
+                    (APP_NAME, session_id),
+                ).fetchall()
     except sqlite3.Error as exc:
         raise HTTPException(status_code=500, detail=f"Failed to read session: {exc}")
 
