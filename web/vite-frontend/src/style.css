@@ -419,6 +419,24 @@ body {
   margin-top: 8px;
 }
 
+.step-feed-child-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+  padding-left: 12px;
+  border-left: 1px solid rgba(125, 211, 252, 0.22);
+}
+
+.step-feed-child-message {
+  margin-bottom: 0;
+}
+
+.step-feed-child-message .step-feed-bubble {
+  background: linear-gradient(135deg, rgba(125, 211, 252, 0.08), rgba(16, 185, 129, 0.06));
+  box-shadow: none;
+}
+
 .step-feed-highlight .message-bubble {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px rgba(125, 211, 252, 0.22), 0 10px 30px rgba(125, 211, 252, 0.14);

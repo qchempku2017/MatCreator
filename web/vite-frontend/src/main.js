@@ -454,7 +454,7 @@ class AgentGraphView {
 
     if (this._activeDetailNodeId) {
       if (this._nodeData[this._activeDetailNodeId]) {
-        this._showDetail(this._activeDetailNodeId, { preserveScroll: true });
+        this._showDetail(this._activeDetailNodeId, { preserveScroll: true, scrollToStep: false });
       } else {
         this._hideDetail();
       }
@@ -626,7 +626,7 @@ class AgentGraphView {
     }
 
     this._detailEl.classList.remove("hidden");
-    if (raw.type === "step") stepExecutionFeed.highlight(raw.id);
+    if (raw.type === "step" && options.scrollToStep !== false) stepExecutionFeed.highlight(raw.id);
     syncPanelResizerVisibility();
     if (preserveScroll) {
       this._restoreOpenToolCallKeys(prevOpenToolCallKeys);
@@ -660,6 +660,8 @@ class StepExecutionFeed {
     this._liveContainerEl = null;
     this._liveStartedAt = null;
     this._liveToolHostEl = null;
+    this._stepById = new Map();
+    this._childNodes = new Map();
   }
 
   reset() {
@@ -670,6 +672,9 @@ class StepExecutionFeed {
     this._liveAnchorEl = null;
     this._liveContainerEl = null;
     this._liveStartedAt = null;
+    this._liveToolHostEl = null;
+    this._stepById = new Map();
+    this._childNodes = new Map();
   }
 
   startLiveTurn(anchorEl, startedAt = Date.now()) {
@@ -692,7 +697,9 @@ class StepExecutionFeed {
   attachLiveToolHost(hostEl) {
     if (!hostEl || this._liveToolHostEl === hostEl) return;
     this._liveToolHostEl = hostEl;
-    for (const card of this._cards.values()) {
+    for (const [nodeId, card] of this._cards.entries()) {
+      const node = this._stepById.get(nodeId);
+      if (node && !this.isRootStep(node)) continue;
       if (card.dataset.stepStartTime !== undefined) {
         hostEl.appendChild(card);
       }
@@ -717,6 +724,8 @@ class StepExecutionFeed {
         const tb = b.start_time ? new Date(b.start_time).getTime() : Infinity;
         return ta - tb;
       });
+    this.setHierarchy(steps);
+    const rootSteps = steps.filter((node) => this.isRootStep(node));
 
     const seen = new Set(steps.map((node) => node.id));
     for (const nodeId of this._cards.keys()) {
@@ -727,8 +736,29 @@ class StepExecutionFeed {
     }
 
     const shouldStick = isChatNearBottom();
-    steps.forEach((node) => this._upsert(node));
+    rootSteps.forEach((node) => this._upsert(node));
     if (shouldStick) scrollToBottom();
+  }
+
+  setHierarchy(stepNodes) {
+    const steps = Array.isArray(stepNodes) ? stepNodes : [];
+    this._stepById = new Map(steps.map((node) => [node.id, node]));
+    this._childNodes = new Map();
+
+    steps.forEach((node) => {
+      if (!this._stepById.has(node.parent_id)) return;
+      const children = this._childNodes.get(node.parent_id) || [];
+      children.push(node);
+      this._childNodes.set(node.parent_id, children);
+    });
+
+    for (const children of this._childNodes.values()) {
+      children.sort((a, b) => this._stepSortTime(a) - this._stepSortTime(b));
+    }
+  }
+
+  isRootStep(node) {
+    return !this._stepById.has(node?.parent_id);
   }
 
   _activeLiveContainer() {
@@ -785,6 +815,7 @@ class StepExecutionFeed {
   }
 
   _placeCard(outer, node) {
+    outer.classList.remove("step-feed-child-message");
     const liveContainer = this._activeLiveContainer();
     if (liveContainer) {
       this._insertIntoLiveContainer(liveContainer, outer, node);
@@ -798,7 +829,19 @@ class StepExecutionFeed {
   }
 
   _stepSortTime(node) {
-    return node.start_time ? new Date(node.start_time).getTime() : Infinity;
+    return node?.start_time ? new Date(node.start_time).getTime() : Infinity;
+  }
+
+  _upsertNested(node, container, ancestors) {
+    let outer = this._cards.get(node.id);
+    if (!outer) {
+      outer = this._createCard(node);
+      this._cards.set(node.id, outer);
+    }
+    outer.classList.add("step-feed-child-message");
+    this._insertIntoLiveContainer(container, outer, node);
+    this._renderCard(outer, node, ancestors);
+    return outer;
   }
 
   _insertIntoLiveContainer(container, outer, node) {
@@ -911,9 +954,12 @@ class StepExecutionFeed {
     return details;
   }
 
-  _renderCard(outer, node) {
+  _renderCard(outer, node, ancestors = new Set([node.id])) {
     outer.dataset.stepNodeId = node.id;
     outer.classList.toggle("step-feed-highlight", this._highlightedId === node.id);
+
+    const bubble = outer.querySelector(".step-feed-bubble");
+    bubble?.querySelector(":scope > .step-feed-child-section")?.remove();
 
     const details = outer.querySelector(".step-feed-details");
     const userChoice = this._userOpen.get(node.id);
@@ -963,6 +1009,27 @@ class StepExecutionFeed {
 
     if (node.input && Object.keys(node.input).length) {
       body.appendChild(this._wireNested(node.id, "input", renderStepInput(node.input)));
+    }
+
+    const childNodes = (this._childNodes.get(node.id) || [])
+      .filter((child) => !ancestors.has(child.id));
+    if (childNodes.length) {
+      const section = document.createElement("div");
+      section.className = "step-feed-section step-feed-child-section";
+      const label = document.createElement("div");
+      label.className = "step-feed-section-title";
+      label.textContent = `Sub-executors (${childNodes.length})`;
+      const childHost = document.createElement("div");
+      childHost.className = "step-feed-child-list";
+      section.append(label, childHost);
+
+      childNodes.forEach((child) => {
+        const nextAncestors = new Set(ancestors);
+        nextAncestors.add(child.id);
+        this._upsertNested(child, childHost, nextAncestors);
+      });
+
+      bubble?.appendChild(section);
     }
 
     const conversation = node.conversation || [];
@@ -3345,12 +3412,16 @@ function eventToTimelineParts(event, frById, pairedResponseIds = new Set()) {
 function renderSessionTimeline(events, stepNodes) {
   chatArea.innerHTML = "";
   stepExecutionFeed.reset();
+  stepExecutionFeed.setHierarchy(stepNodes || []);
 
   const sortedEvents = (events || [])
     .map((event, idx) => ({ event, ts: eventTimestamp(event, idx), order: idx }))
     .sort((a, b) => a.ts - b.ts || a.order - b.order)
     .map((item) => item.event);
-  const pendingStepNodes = (stepNodes || []).slice().sort((a, b) => stepNodeTimestamp(a) - stepNodeTimestamp(b));
+  const pendingStepNodes = (stepNodes || [])
+    .filter((node) => stepExecutionFeed.isRootStep(node))
+    .slice()
+    .sort((a, b) => stepNodeTimestamp(a) - stepNodeTimestamp(b));
   const frById = collectFunctionResponsesById(events);
   const pairedResponseIds = new Set();
   let shownPlotPaths = new Set();
