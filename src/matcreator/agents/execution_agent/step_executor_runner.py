@@ -17,6 +17,7 @@ from google.genai import types
 
 from ...workspace import get_session_workdir
 from .step_executor import StepExecutorInput, StepExecutorResult, step_executor_agent
+from .recovery import finish_node_attempt, heartbeat_node_attempt, start_node_attempt
 from ..graph_logger import AgentGraphLogger
 from ..session_log import append_session_log_entry, collect_artifact_paths, is_session_log_state_key
 from ..cancellation import (
@@ -36,6 +37,7 @@ _CANCEL_POLL_INTERVAL = 0.5  # seconds
 # Wall-clock timeout for a single step or sub-step execution.
 # A sub-step that exceeds this returns needs_replanning instead of hanging.
 _SUB_STEP_TIMEOUT = int(os.environ.get("SUB_STEP_TIMEOUT", "3600"))  # seconds
+_RECOVERY_HEARTBEAT_INTERVAL = int(os.environ.get("STEP_RECOVERY_HEARTBEAT_INTERVAL", "10"))  # seconds
 
 
 def _now() -> str:
@@ -146,6 +148,15 @@ async def _watch_for_cancellation(
                 )
                 target.cancel()
                 return
+    except asyncio.CancelledError:
+        pass
+
+
+async def _heartbeat_recovery_attempt(attempt: dict) -> None:
+    try:
+        while True:
+            await asyncio.sleep(_RECOVERY_HEARTBEAT_INTERVAL)
+            await asyncio.to_thread(heartbeat_node_attempt, attempt)
     except asyncio.CancelledError:
         pass
 
@@ -324,6 +335,27 @@ async def run_step_executor(
         "kind": "step_start",
         **step_input_log,
     })
+    recovery_attempt = await asyncio.to_thread(
+        start_node_attempt,
+        workspace_dir=step_workspace,
+        session_id=session_id,
+        node_id=str(effective_id),
+        step_id=step_id,
+        step_number=step_number,
+        action=action,
+        suggested_skills=suggested_skills,
+        prior_context=prior_context,
+    )
+    if node_id:
+        graph_state = tool_context.state.get("execution_graph") or {}
+        graph_nodes = graph_state.get("nodes") or {}
+        if node_id in graph_nodes:
+            graph_nodes[node_id]["status"] = "running"
+            graph_nodes[node_id]["recovery"] = {
+                "status": "running",
+                "started_at": _now(),
+            }
+            tool_context.state["execution_graph"] = graph_state
 
     # Pre-step cancellation check — abort before creating the runner if flagged
     if is_cancellation_requested(session_id) or is_step_cancellation_requested(session_id, step_number):
@@ -340,6 +372,12 @@ async def run_step_executor(
             "status": "cancelled",
             "message": f"Node {effective_id} skipped: execution cancellation was requested ({reason}).",
         })
+        await asyncio.to_thread(
+            finish_node_attempt,
+            recovery_attempt,
+            status="cancelled",
+            message=f"Node {effective_id} skipped: execution cancellation was requested ({reason}).",
+        )
         return {
             "status": "cancelled",
             "message": f"Node {effective_id} skipped: execution cancellation was requested ({reason}).",
@@ -385,6 +423,7 @@ async def run_step_executor(
     watcher = asyncio.create_task(
         _watch_for_cancellation(inner_task, session_id, step_number)
     )
+    recovery_heartbeat = asyncio.create_task(_heartbeat_recovery_attempt(recovery_attempt))
 
     cancelled = False
     timed_out = False
@@ -403,7 +442,9 @@ async def run_step_executor(
     finally:
         if not watcher.done():
             watcher.cancel()
-        await asyncio.gather(inner_task, watcher, return_exceptions=True)
+        if not recovery_heartbeat.done():
+            recovery_heartbeat.cancel()
+        await asyncio.gather(inner_task, watcher, recovery_heartbeat, return_exceptions=True)
         try:
             await asyncio.wait_for(runner.close(), timeout=5.0)
         except Exception:
@@ -427,6 +468,13 @@ async def run_step_executor(
             "replan_reason": f"Step {step_number} timed out after {_SUB_STEP_TIMEOUT}s.",
             "events": event_log,
         }, artifacts=artifact_paths)
+        await asyncio.to_thread(
+            finish_node_attempt,
+            recovery_attempt,
+            status="needs_replanning",
+            artifacts=artifact_paths,
+            message=f"Step {step_number} timed out after {_SUB_STEP_TIMEOUT}s.",
+        )
         return {
             "status": "needs_replanning",
             "replan_reason": f"Step {step_number} timed out after {_SUB_STEP_TIMEOUT}s.",
@@ -450,6 +498,13 @@ async def run_step_executor(
             "message": f"Step {step_number} cancelled ({reason}).",
             "events": event_log,
         }, artifacts=artifact_paths)
+        await asyncio.to_thread(
+            finish_node_attempt,
+            recovery_attempt,
+            status="cancelled",
+            artifacts=artifact_paths,
+            message=f"Step {step_number} cancelled ({reason}).",
+        )
         return {
             "status": "cancelled",
             "message": f"Step {step_number} cancelled ({reason}).",
@@ -492,6 +547,13 @@ async def run_step_executor(
             "state_delta": public_state_delta,
             "events": event_log,
         }, artifacts=[*artifact_paths, *result.artifacts, *plot_paths])
+        await asyncio.to_thread(
+            finish_node_attempt,
+            recovery_attempt,
+            status=result.status,
+            result=payload,
+            artifacts=[*artifact_paths, *result.artifacts, *plot_paths],
+        )
         clear_step_cancellation(session_id, step_number)
         return payload
 
@@ -510,5 +572,12 @@ async def run_step_executor(
         "state_delta": public_state_delta,
         "events": event_log,
     }, artifacts=artifact_paths)
+    await asyncio.to_thread(
+        finish_node_attempt,
+        recovery_attempt,
+        status="needs_replanning",
+        result=result.model_dump(),
+        artifacts=artifact_paths,
+    )
     clear_step_cancellation(session_id, step_number)
     return result.model_dump()
