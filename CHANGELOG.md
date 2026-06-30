@@ -2,6 +2,34 @@
 
 <!-- version list -->
 
+## v2.4.0 (2026-06-30)
+
+### Bug Fixes
+
+- Auto-wrap executor title on card expand, keep triangle aligned to first line
+  ([`be8e8fa`](https://github.com/AI4MS/MatCreator/commit/be8e8faf00e77ed779687fccbb17e50f6690320c))
+
+- Improve front end UI
+  ([`85cc466`](https://github.com/AI4MS/MatCreator/commit/85cc466f99b2aba6db8dae8766194c42c9487df2))
+
+- Issue with the ordering of sub-executor
+  ([`7556ef5`](https://github.com/AI4MS/MatCreator/commit/7556ef5636ed00ef3eeffe2a003e107764274f07))
+
+### Features
+
+- Add crash recovery support
+  ([`f1671d5`](https://github.com/AI4MS/MatCreator/commit/f1671d51bb92351a5d73719b10801da9f4b70f1b))
+
+- Image lightbox with zoom, pan, and drag for file viewer and chat images
+  ([`60cc250`](https://github.com/AI4MS/MatCreator/commit/60cc250b6f334dc59209cf904a30b5416f6ec52f))
+
+- Split plan graph into navigable subgraphs; fallback to manual grid when no edges
+  ([`039a8cc`](https://github.com/AI4MS/MatCreator/commit/039a8ccf553363ee29976dcb1910e63b7a7f503e))
+
+- Unify the session log
+  ([`cf5a531`](https://github.com/AI4MS/MatCreator/commit/cf5a531384a9c19caa87643a31765a02810a3435))
+
+
 ## v2.3.0 (2026-06-29)
 
 ### Bug Fixes
