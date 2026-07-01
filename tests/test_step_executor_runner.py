@@ -1,8 +1,22 @@
 from pathlib import Path
 import logging
 
+from matcreator.llm_cards import LLMCard
 from matcreator.agents.execution_agent.step_executor import StepExecutorResult
-from matcreator.agents.execution_agent.step_executor_runner import _verify_step_result_artifacts
+from matcreator.agents.execution_agent.step_executor import StepExecutorInput
+from matcreator.agents.execution_agent.step_executor_runner import (
+    _build_step_content,
+    _verify_step_result_artifacts,
+)
+from matcreator.agents.session_log import SESSION_ARTIFACTS_KEY
+
+
+class _FakeState:
+    def __init__(self, data):
+        self._data = data
+
+    def to_dict(self):
+        return self._data
 
 
 def test_success_with_missing_artifact_requires_replanning(tmp_path, caplog):
@@ -99,3 +113,100 @@ def test_existing_artifact_outside_allowed_roots_requires_replanning(tmp_path):
     assert verified.status == "needs_replanning"
     assert verified.artifacts == []
     assert missing_artifacts == [str(outside_artifact)]
+
+
+def test_multimodal_card_attaches_referenced_image_to_step_content(tmp_path):
+    image_path = tmp_path / "plot.png"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+    step_input = StepExecutorInput(
+        step_number=1,
+        action=f"Analyze the image at {image_path}",
+        suggested_skills=["plot"],
+        workspace_dir=str(tmp_path),
+    )
+
+    content, input_images = _build_step_content(
+        step_input,
+        llm_card=LLMCard(
+            name="vision",
+            model="openai/vision-model",
+            modalities=("text", "image"),
+        ),
+        workspace_dir=tmp_path,
+        state={},
+    )
+
+    assert input_images == [str(image_path)]
+    assert len(content.parts) == 2
+    assert content.parts[1].inline_data.mime_type == "image/png"
+
+
+def test_text_only_card_does_not_attach_referenced_image(tmp_path):
+    image_path = tmp_path / "plot.png"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+    step_input = StepExecutorInput(
+        step_number=1,
+        action=f"Analyze the image at {image_path}",
+        suggested_skills=["plot"],
+        workspace_dir=str(tmp_path),
+    )
+
+    content, input_images = _build_step_content(
+        step_input,
+        llm_card=LLMCard(name="text", model="openai/text-model"),
+        workspace_dir=tmp_path,
+        state={},
+    )
+
+    assert input_images == []
+    assert len(content.parts) == 1
+
+
+def test_multimodal_card_can_attach_session_image_artifact_when_image_requested(tmp_path):
+    image_path = tmp_path / "previous_plot.png"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+    step_input = StepExecutorInput(
+        step_number=1,
+        action="Analyze the previous plot.",
+        suggested_skills=["plot"],
+        workspace_dir=str(tmp_path),
+    )
+
+    content, input_images = _build_step_content(
+        step_input,
+        llm_card=LLMCard(
+            name="vision",
+            model="openai/vision-model",
+            tags=("vision",),
+        ),
+        workspace_dir=tmp_path,
+        state={SESSION_ARTIFACTS_KEY: [str(image_path)]},
+    )
+
+    assert input_images == [str(image_path)]
+    assert len(content.parts) == 2
+
+
+def test_multimodal_card_accepts_adk_state_object_for_session_image_artifacts(tmp_path):
+    image_path = tmp_path / "previous_plot.png"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+    step_input = StepExecutorInput(
+        step_number=1,
+        action="Describe the previous image.",
+        suggested_skills=["plot"],
+        workspace_dir=str(tmp_path),
+    )
+
+    content, input_images = _build_step_content(
+        step_input,
+        llm_card=LLMCard(
+            name="vision",
+            model="openai/vision-model",
+            modalities=("text", "image"),
+        ),
+        workspace_dir=tmp_path,
+        state=_FakeState({SESSION_ARTIFACTS_KEY: [str(image_path)]}),
+    )
+
+    assert input_images == [str(image_path)]
+    assert len(content.parts) == 2
