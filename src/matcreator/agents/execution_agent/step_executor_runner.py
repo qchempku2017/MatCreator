@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import mimetypes
 import os
+import re
 from contextlib import aclosing
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,11 +17,22 @@ from google.adk.tools.agent_tool import ForwardingArtifactService
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 
+from ...llm_cards import LLMCard, select_executor_llm_card
 from ...workspace import get_session_workdir
-from .step_executor import StepExecutorInput, StepExecutorResult, step_executor_agent
+from .step_executor import (
+    STEP_EXECUTOR_AGENT_NAME,
+    StepExecutorInput,
+    StepExecutorResult,
+    build_step_executor_agent,
+)
 from .recovery import finish_node_attempt, heartbeat_node_attempt, start_node_attempt
 from ..graph_logger import AgentGraphLogger
-from ..session_log import append_session_log_entry, collect_artifact_paths, is_session_log_state_key
+from ..session_log import (
+    append_session_log_entry,
+    collect_artifact_paths,
+    is_session_log_state_key,
+    session_artifacts_from_state,
+)
 from ..cancellation import (
     is_cancellation_requested,
     get_cancellation_reason,
@@ -38,6 +51,24 @@ _CANCEL_POLL_INTERVAL = 0.5  # seconds
 # A sub-step that exceeds this returns needs_replanning instead of hanging.
 _SUB_STEP_TIMEOUT = int(os.environ.get("SUB_STEP_TIMEOUT", "3600"))  # seconds
 _RECOVERY_HEARTBEAT_INTERVAL = int(os.environ.get("STEP_RECOVERY_HEARTBEAT_INTERVAL", "10"))  # seconds
+_MAX_INPUT_IMAGE_ATTACHMENTS = int(os.environ.get("MATCREATOR_MAX_INPUT_IMAGE_ATTACHMENTS", "4"))
+_MAX_INPUT_IMAGE_BYTES = int(os.environ.get("MATCREATOR_MAX_INPUT_IMAGE_BYTES", str(5 * 1024 * 1024)))
+_IMAGE_PATH_RE = re.compile(
+    r"(?P<path>(?:~|/|\./|\.\./)?[^\s'\"<>]+?\.(?:png|jpe?g|webp|gif|bmp|tiff?))",
+    re.IGNORECASE,
+)
+_IMAGE_CONTEXT_TOKENS = {
+    "image",
+    "images",
+    "plot",
+    "plots",
+    "figure",
+    "figures",
+    "screenshot",
+    "diagram",
+    "visual",
+    "vision",
+}
 
 
 def _now() -> str:
@@ -57,6 +88,127 @@ def _response_dict(response) -> dict:
 def _append_unique(values: list[str], value) -> None:
     if isinstance(value, str) and value and value not in values:
         values.append(value)
+
+
+def _image_mime_type(path: Path) -> str | None:
+    guessed, _ = mimetypes.guess_type(path.name)
+    if guessed and guessed.startswith("image/"):
+        return guessed
+    suffix = path.suffix.lower()
+    if suffix in {".jpg", ".jpeg"}:
+        return "image/jpeg"
+    if suffix == ".png":
+        return "image/png"
+    if suffix == ".webp":
+        return "image/webp"
+    if suffix == ".gif":
+        return "image/gif"
+    return None
+
+
+def _resolve_input_image_path(raw_path: str, workspace_dir: Path) -> Path | None:
+    cleaned = raw_path.strip().strip("'\"`.,;:)]}")
+    if not cleaned:
+        return None
+    path = Path(cleaned).expanduser()
+    if not path.is_absolute():
+        path = workspace_dir / path
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return None
+    if not resolved.is_file() or _image_mime_type(resolved) is None:
+        return None
+    return resolved
+
+
+def _extract_image_paths_from_text(text: str | None, workspace_dir: Path) -> list[Path]:
+    paths: list[Path] = []
+    for match in _IMAGE_PATH_RE.finditer(text or ""):
+        resolved = _resolve_input_image_path(match.group("path"), workspace_dir)
+        if resolved is not None and resolved not in paths:
+            paths.append(resolved)
+    return paths
+
+
+def _mentions_image_context(*values: str | None) -> bool:
+    tokens = set(re.findall(r"[a-z0-9_+-]+", " ".join(value or "" for value in values).lower()))
+    return bool(tokens & _IMAGE_CONTEXT_TOKENS)
+
+
+def _state_to_dict(state) -> dict:
+    if isinstance(state, dict):
+        return state
+    to_dict = getattr(state, "to_dict", None)
+    if callable(to_dict):
+        try:
+            data = to_dict()
+        except Exception:
+            return {}
+        return data if isinstance(data, dict) else {}
+    return {}
+
+
+def _input_image_paths(
+    *,
+    action: str,
+    prior_context: str | None,
+    workspace_dir: Path,
+    state: dict,
+) -> list[Path]:
+    paths: list[Path] = []
+    for candidate in [
+        *_extract_image_paths_from_text(action, workspace_dir),
+        *_extract_image_paths_from_text(prior_context, workspace_dir),
+    ]:
+        if candidate not in paths:
+            paths.append(candidate)
+
+    if _mentions_image_context(action, prior_context):
+        for artifact in session_artifacts_from_state(_state_to_dict(state)):
+            resolved = _resolve_input_image_path(artifact, workspace_dir)
+            if resolved is not None and resolved not in paths:
+                paths.append(resolved)
+
+    return paths[:_MAX_INPUT_IMAGE_ATTACHMENTS]
+
+
+def _build_step_content(
+    step_input: StepExecutorInput,
+    *,
+    llm_card: LLMCard,
+    workspace_dir: Path,
+    state: dict,
+) -> tuple[types.Content, list[str]]:
+    parts = [types.Part.from_text(text=step_input.model_dump_json(exclude_none=True))]
+    attached_paths: list[str] = []
+    if llm_card.supports_image_input():
+        for image_path in _input_image_paths(
+            action=step_input.action,
+            prior_context=step_input.prior_context,
+            workspace_dir=workspace_dir,
+            state=state,
+        ):
+            try:
+                if image_path.stat().st_size > _MAX_INPUT_IMAGE_BYTES:
+                    logger.warning(
+                        "[step_executor_runner] skipping oversized input image for node: %s",
+                        image_path,
+                    )
+                    continue
+                parts.append(types.Part.from_bytes(
+                    data=image_path.read_bytes(),
+                    mime_type=_image_mime_type(image_path) or "image/png",
+                ))
+                attached_paths.append(str(image_path))
+            except OSError as exc:
+                logger.warning(
+                    "[step_executor_runner] could not attach input image %s: %s",
+                    image_path,
+                    exc,
+                )
+
+    return types.Content(role="user", parts=parts), attached_paths
 
 
 def _is_within_any_root(path: Path, roots: list[Path]) -> bool:
@@ -297,6 +449,18 @@ async def run_step_executor(
     step_id = f"{parent_id}__node_{effective_id}"
     parent_path = tool_context.state.get("_step_label_path", "")
     step_label_path = f"{parent_path}-{effective_id}" if parent_path else effective_id
+    llm_card = select_executor_llm_card(
+        action=action,
+        suggested_skills=suggested_skills,
+        prior_context=prior_context,
+    )
+    public_llm_card = llm_card.public_dict()
+    logger.info(
+        "[step_executor_runner] node %s using LLM card %s (%s)",
+        effective_id,
+        llm_card.name,
+        llm_card.model,
+    )
     await asyncio.to_thread(graph.log_node_start, step_id, "step", f"Node {step_label_path}", parent_id)
 
     # Serialize input as user message (matches AgentTool input_schema path)
@@ -307,9 +471,11 @@ async def run_step_executor(
         workspace_dir=str(step_workspace),
         prior_context=prior_context,
     )
-    content = types.Content(
-        role="user",
-        parts=[types.Part.from_text(text=step_input.model_dump_json(exclude_none=True))],
+    content, input_image_paths = _build_step_content(
+        step_input,
+        llm_card=llm_card,
+        workspace_dir=step_workspace,
+        state=tool_context.state,
     )
 
     # Log input parameters
@@ -320,6 +486,8 @@ async def run_step_executor(
         "workspace_dir": str(step_workspace),
         "prior_context": prior_context,
         "suggested_skills": suggested_skills,
+        "llm_card": public_llm_card,
+        "input_images": input_image_paths,
     })
     step_input_log = {
         "node_id": effective_id,
@@ -330,6 +498,8 @@ async def run_step_executor(
         "workspace_dir": str(step_workspace),
         "prior_context": prior_context,
         "suggested_skills": suggested_skills,
+        "llm_card": public_llm_card,
+        "input_images": input_image_paths,
     }
     append_session_log_entry(tool_context, {
         "kind": "step_start",
@@ -385,8 +555,9 @@ async def run_step_executor(
     # Create runner with isolated session (mirrors AgentTool)
     invocation_context = tool_context._invocation_context
     child_app_name = (
-        invocation_context.app_name if invocation_context else step_executor_agent.name
+        invocation_context.app_name if invocation_context else STEP_EXECUTOR_AGENT_NAME
     )
+    step_executor_agent = build_step_executor_agent(llm_card)
     runner = Runner(
         app_name=child_app_name,
         agent=step_executor_agent,
