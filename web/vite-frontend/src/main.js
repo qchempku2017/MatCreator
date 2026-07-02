@@ -24,6 +24,7 @@ const state = {
   deploymentMode: localStorage.getItem("mat_deploymentMode") || "local",
   sessionReady: false,
   structure3dViewer: null,
+  activeCenterTabId: "chat",
   currentUploads: [],
   isSending: false,
   sendController: null,
@@ -51,12 +52,9 @@ const themeToggle = document.getElementById("theme-toggle");
 const refreshSessionsBtn = document.getElementById("refresh-sessions");
 const graphViewport = document.getElementById("graph-viewport");
 const graphDetail = document.getElementById("graph-detail");
-const structureViewer = document.getElementById("structure-viewer");
-const svCanvas = document.getElementById("sv-canvas");
-const svMeta = document.getElementById("sv-meta");
-const svClose = document.getElementById("sv-close");
+const centerTabs = document.getElementById("center-tabs");
+const centerTabPanels = document.getElementById("center-tab-panels");
 const graphResizer = document.getElementById("graph-resizer");
-const structureResizer = document.getElementById("structure-resizer");
 const graphStatusEl = document.getElementById("graph-status");
 const loginModal = document.getElementById("login-modal");
 const loginInput = document.getElementById("login-input");
@@ -95,6 +93,7 @@ let knowledgeReviewPoll = null;
 let workspaceTerminal = null;
 let workspaceTerminalFit = null;
 let workspaceTerminalSocket = null;
+const structureTabs = new Map();
 
 function autoResizeTextInput() {
   if (!textInput) return;
@@ -151,12 +150,8 @@ const STATUS_COLORS = {
 };
 
 const MOBILE_LAYOUT_QUERY = window.matchMedia("(max-width: 900px)");
-const PANEL_HEIGHT_DEFAULTS = {
-  "structure-viewer": 500,
-};
-const PANEL_HEIGHT_BOUNDS = {
-  "structure-viewer": { min: 140, max: 900 },
-};
+const PANEL_HEIGHT_DEFAULTS = {};
+const PANEL_HEIGHT_BOUNDS = {};
 
 const COL_WIDTH_DEFAULTS = {
   "graph-column": 360,
@@ -214,25 +209,23 @@ class AgentGraphView {
         hierarchical: {
           direction: "UD",
           sortMethod: "directed",
-          nodeSpacing: 120,
-          levelSeparation: 90,
+          nodeSpacing: 76,
+          levelSeparation: 86,
           blockShifting: true,
           edgeMinimization: true,
         },
       },
       physics: { enabled: false },
       edges: {
-        arrows: { to: { enabled: true, scaleFactor: 0.6 } },
+        arrows: { to: { enabled: true, scaleFactor: 0.72 } },
         color: { color: "#4B5563", highlight: "#9CA3AF" },
-        width: 1.5,
+        width: 2.4,
         smooth: { type: "cubicBezier", forceDirection: "vertical" },
       },
       nodes: {
-        shape: "box",
+        shape: "custom",
         borderWidth: 2,
         borderWidthSelected: 3,
-        font: { size: 13, face: "Manrope, sans-serif" },
-        margin: { top: 8, bottom: 8, left: 12, right: 12 },
       },
       interaction: {
         hover: true,
@@ -259,23 +252,102 @@ class AgentGraphView {
     });
   }
 
+  _nodeTooltip(raw) {
+    const lines = [
+      raw.label || raw.id,
+      `Status: ${raw.status || "unknown"}`,
+      `Type: ${raw.type || "step"}`,
+    ];
+    if (raw.summary) lines.push(`Summary: ${raw.summary}`);
+    if (raw.start_time) {
+      if (raw.end_time) {
+        const secs = ((new Date(raw.end_time) - new Date(raw.start_time)) / 1000).toFixed(1);
+        lines.push(`Duration: ${secs}s`);
+      } else {
+        lines.push("Duration: running");
+      }
+    }
+    return lines.join("\n");
+  }
+
+  _nodeBadge(raw) {
+    const stepNumber = raw.input && raw.input.step_number;
+    if (raw.type === "step" && stepNumber !== undefined && stepNumber !== null) {
+      return String(stepNumber).slice(0, 2);
+    }
+    const typeInitials = {
+      orchestrator: "O",
+      planning: "P",
+      execution: "E",
+      tester: "T",
+    };
+    if (typeInitials[raw.type]) return typeInitials[raw.type];
+    return String(raw.label || raw.id || "?").trim().charAt(0).toUpperCase() || "?";
+  }
+
+  _nodeRadius(raw) {
+    if (raw.type === "orchestrator") return 17;
+    if (raw.type === "planning") return 15;
+    return 13;
+  }
+
+  _nodeRenderer(raw, colors, badge, radius, isRunning) {
+    return ({ ctx, x, y, state }) => {
+      const selected = Boolean(state?.selected);
+      const hover = Boolean(state?.hover);
+      const drawRadius = radius + (selected ? 2 : hover ? 1 : 0);
+      const borderWidth = isRunning ? 2.5 : selected ? 3 : 2;
+
+      return {
+        drawNode: () => {
+          ctx.save();
+          ctx.beginPath();
+          ctx.arc(x, y, drawRadius, 0, Math.PI * 2);
+          ctx.fillStyle = hover || selected ? colors.border : colors.bg;
+          ctx.fill();
+          ctx.lineWidth = borderWidth;
+          ctx.strokeStyle = colors.border;
+          if (isRunning) ctx.setLineDash([4, 3]);
+          ctx.stroke();
+          ctx.setLineDash([]);
+
+          ctx.fillStyle = colors.font;
+          ctx.font = `800 ${badge.length > 1 ? 10.5 : 12}px Manrope, system-ui, sans-serif`;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          const metrics = ctx.measureText(badge);
+          const opticalOffset = metrics.actualBoundingBoxLeft !== undefined
+            ? (metrics.actualBoundingBoxLeft - metrics.actualBoundingBoxRight) / 2
+            : 0;
+          ctx.fillText(badge, x + opticalOffset, y);
+          ctx.restore();
+        },
+        nodeDimensions: {
+          width: (drawRadius + borderWidth) * 2,
+          height: (drawRadius + borderWidth) * 2,
+        },
+      };
+    };
+  }
+
   _visNode(raw) {
     const typeColors = NODE_COLORS[raw.type] || NODE_COLORS.step;
     const statusOverride = STATUS_COLORS[raw.status];
     const colors = statusOverride || typeColors;
     const isRunning = raw.status === "running";
+    const badge = this._nodeBadge(raw);
+    const radius = this._nodeRadius(raw);
     return {
       id: raw.id,
-      label: raw.label,
+      label: "",
+      shape: "custom",
       color: {
         background: colors.bg,
         border: colors.border,
         highlight: { background: colors.border, border: colors.border },
       },
-      font: { color: colors.font },
-      shapeProperties: isRunning ? { borderDashes: [4, 3] } : {},
-      borderWidth: isRunning ? 2.5 : 2,
-      title: raw.summary || raw.label,
+      ctxRenderer: this._nodeRenderer(raw, colors, badge, radius, isRunning),
+      title: this._nodeTooltip(raw),
     };
   }
 
@@ -474,6 +546,7 @@ class AgentGraphView {
           to: e.to,
           hidden: false,
           physics: false,
+          width: 2.4,
           smooth: { type: "cubicBezier", forceDirection: "vertical" },
         });
       }
@@ -546,9 +619,6 @@ class AgentGraphView {
     const preserveScroll = Boolean(options.preserveScroll);
     const prevScrollTop = preserveScroll ? this._detailEl.scrollTop : 0;
     const prevOpenToolCallKeys = preserveScroll ? this._captureOpenToolCallKeys() : new Set();
-    structureViewer.classList.add("hidden");
-    state.structure3dViewer = null;
-    svCanvas.innerHTML = "";
     this._detailLabel.textContent = raw.label;
     this._detailStatus.textContent = raw.status;
     this._detailStatus.className = `badge badge-${raw.status}`;
@@ -1629,47 +1699,19 @@ function applyStoredPanelHeights() {
 
 function refreshGraphAndStructureLayout() {
   agentGraph.notifyLayoutChanged();
-  if (state.structure3dViewer && !structureViewer.classList.contains("hidden")) {
+  for (const tab of structureTabs.values()) {
+    if (!tab.viewer) continue;
     try {
-      state.structure3dViewer.resize();
-      state.structure3dViewer.render();
+      tab.viewer.resize();
+      tab.viewer.render();
     } catch (_) {
       // ignore transient resize/render issues
     }
   }
 }
 
-function setStructureViewerActive(active) {
-  if (!graphColumn || !graphViewport) return;
-  graphColumn.classList.toggle("structure-active", active);
-
-  if (active) {
-    if (graphViewport.dataset.preStructureHeight === undefined) {
-      graphViewport.dataset.preStructureHeight = graphViewport.style.height || "";
-    }
-    applyTargetHeight(graphViewport, Math.min(getTargetHeight(graphViewport), 260));
-  } else if (graphViewport.dataset.preStructureHeight !== undefined) {
-    const previousHeight = graphViewport.dataset.preStructureHeight;
-    if (previousHeight) {
-      graphViewport.style.height = previousHeight;
-    } else {
-      graphViewport.style.removeProperty("height");
-    }
-    delete graphViewport.dataset.preStructureHeight;
-  }
-
-  refreshGraphAndStructureLayout();
-}
-
 function syncPanelResizerVisibility() {
-  const hideAll = isMobileLayout();
-  const structureHidden = structureViewer.classList.contains("hidden");
-
   graphResizer?.classList.add("hidden");
-
-  if (structureResizer) {
-    structureResizer.classList.toggle("hidden", hideAll || structureHidden);
-  }
 }
 
 function initPanelResizer(handleEl, targetEl) {
@@ -1822,7 +1864,6 @@ function initColResizers() {
 
 function initPanelResizers() {
   applyStoredPanelHeights();
-  initPanelResizer(structureResizer, structureViewer);
   syncPanelResizerVisibility();
 
   MOBILE_LAYOUT_QUERY.addEventListener("change", () => {
@@ -3820,24 +3861,148 @@ async function sendMessage(message) {
 // Structure viewer
 // ---------------------------------------------------------------------------
 
+function structureTabId(path) {
+  let hash = 0;
+  const source = String(path || "");
+  for (let i = 0; i < source.length; i++) {
+    hash = ((hash << 5) - hash + source.charCodeAt(i)) | 0;
+  }
+  return `structure-${Math.abs(hash)}`;
+}
+
+function structureTabTitle(path) {
+  const filename = String(path || "Structure").split(/[\\/]/).filter(Boolean).pop();
+  return filename || "Structure";
+}
+
+function activateCenterTab(tabId) {
+  state.activeCenterTabId = tabId;
+  centerTabs?.querySelectorAll(".center-tab")?.forEach((tab) => {
+    const active = tab.dataset.tabId === tabId;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", String(active));
+  });
+  centerTabPanels?.querySelectorAll(".center-tab-panel")?.forEach((panel) => {
+    panel.classList.toggle("active", panel.dataset.tabId === tabId);
+  });
+
+  const structureTab = structureTabs.get(tabId);
+  state.structure3dViewer = structureTab?.viewer || null;
+  if (structureTab?.viewer) {
+    requestAnimationFrame(() => {
+      try {
+        structureTab.viewer.resize();
+        structureTab.viewer.render();
+      } catch (_) {
+        // ignore transient 3Dmol resize issues
+      }
+    });
+  }
+}
+
+function closeCenterTab(tabId) {
+  const tab = structureTabs.get(tabId);
+  if (!tab) return;
+
+  tab.button.remove();
+  tab.panel.remove();
+  structureTabs.delete(tabId);
+
+  if (state.activeCenterTabId === tabId) {
+    activateCenterTab("chat");
+  }
+}
+
+function ensureStructureTab(item) {
+  const tabId = structureTabId(item.path);
+  const existing = structureTabs.get(tabId);
+  if (existing) {
+    activateCenterTab(tabId);
+    return existing;
+  }
+
+  const button = document.createElement("button");
+  button.className = "center-tab";
+  button.type = "button";
+  button.role = "tab";
+  button.dataset.tabId = tabId;
+  button.id = `tab-${tabId}`;
+  button.setAttribute("aria-selected", "false");
+  button.setAttribute("aria-controls", `${tabId}-panel`);
+  button.title = item.path;
+
+  const title = document.createElement("span");
+  title.className = "center-tab-title";
+  title.textContent = structureTabTitle(item.path);
+  button.appendChild(title);
+
+  const close = document.createElement("span");
+  close.className = "center-tab-close";
+  close.dataset.closeTabId = tabId;
+  close.setAttribute("aria-hidden", "true");
+  close.textContent = "×";
+  button.appendChild(close);
+
+  const panel = document.createElement("div");
+  panel.className = "center-tab-panel structure-tab-panel";
+  panel.id = `${tabId}-panel`;
+  panel.role = "tabpanel";
+  panel.dataset.tabId = tabId;
+  panel.setAttribute("aria-labelledby", button.id);
+
+  const header = document.createElement("div");
+  header.className = "structure-tab-header";
+
+  const labelWrap = document.createElement("div");
+  const eyebrow = document.createElement("div");
+  eyebrow.className = "eyebrow";
+  eyebrow.textContent = "Structure";
+  const meta = document.createElement("div");
+  meta.className = "sv-meta";
+  labelWrap.append(eyebrow, meta);
+  header.appendChild(labelWrap);
+
+  const canvas = document.createElement("div");
+  canvas.className = "sv-canvas structure-tab-canvas";
+
+  panel.append(header, canvas);
+  centerTabs?.appendChild(button);
+  centerTabPanels?.appendChild(panel);
+
+  const tab = { id: tabId, item, button, panel, canvas, meta, viewer: null };
+  structureTabs.set(tabId, tab);
+  activateCenterTab(tabId);
+  return tab;
+}
+
+centerTabs?.addEventListener("click", (event) => {
+  const closeEl = event.target.closest("[data-close-tab-id]");
+  if (closeEl) {
+    event.stopPropagation();
+    closeCenterTab(closeEl.dataset.closeTabId);
+    return;
+  }
+
+  const tab = event.target.closest(".center-tab");
+  if (tab?.dataset.tabId) activateCenterTab(tab.dataset.tabId);
+});
+
 async function openViewer(item) {
   graphDetail.classList.add("hidden");
-  structureViewer.classList.remove("hidden");
-  setStructureViewerActive(true);
-  syncPanelResizerVisibility();
-  svCanvas.innerHTML = '<div style="color:var(--muted);padding:16px;font-size:13px">Loading…</div>';
-  svMeta.textContent = "";
-  structureViewer.scrollIntoView({ block: "nearest" });
+  const tab = ensureStructureTab(item);
+  tab.canvas.innerHTML = '<div style="color:var(--muted);padding:16px;font-size:13px">Loading…</div>';
+  tab.meta.textContent = "";
 
   try {
     const resp = await fetch(`/api/structure/view?path=${encodeURIComponent(item.path)}&session_id=${encodeURIComponent(state.sessionId || "")}`);
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
 
-    svCanvas.innerHTML = "";
+    tab.canvas.innerHTML = "";
 
-    const viewer = $3Dmol.createViewer(svCanvas, { backgroundColor: "0x06080f" });
-    state.structure3dViewer = viewer;
+    const viewer = $3Dmol.createViewer(tab.canvas, { backgroundColor: state.theme === "light" ? "0xf8fbff" : "0x06080f" });
+    tab.viewer = viewer;
+    if (state.activeCenterTabId === tab.id) state.structure3dViewer = viewer;
     viewer.addModel(data.xyz, "xyz");
     viewer.setStyle({}, { sphere: { scale: 0.3 }, stick: { radius: 0.15 } });
 
@@ -3863,21 +4028,13 @@ async function openViewer(item) {
     viewer.render();
     refreshGraphAndStructureLayout();
 
-    svMeta.textContent =
+    tab.meta.textContent =
       `${data.formula}  ·  ${data.n_atoms} atoms${data.periodic ? "  ·  periodic" : ""}`;
   } catch (err) {
-    svCanvas.innerHTML =
+    tab.canvas.innerHTML =
       `<div style="color:#f87171;padding:16px;font-size:13px">Failed to load structure: ${err}</div>`;
   }
 }
-
-svClose.addEventListener("click", () => {
-  structureViewer.classList.add("hidden");
-  setStructureViewerActive(false);
-  syncPanelResizerVisibility();
-  state.structure3dViewer = null;
-  svCanvas.innerHTML = "";
-});
 
 // ---------------------------------------------------------------------------
 // File viewer
