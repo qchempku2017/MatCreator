@@ -1057,22 +1057,154 @@ details.step-feed-nested {
   color: #F87171;
 }
 .input-container {
+  position: relative;
+  isolation: isolate;
   display: flex;
   flex-direction: column;
   gap: 10px;
-  background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border);
-  border-radius: 14px; padding: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 12px;
   transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
 }
+
+.input-container > * {
+  position: relative;
+  z-index: 1;
+}
+
+.input-container::before,
+.input-container::after {
+  content: "";
+  position: absolute;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+
+.input-container::before {
+  inset: -1px;
+  z-index: -1;
+  border-radius: inherit;
+  padding: 1px;
+  background:
+    conic-gradient(
+      from var(--mode-spin, 0deg),
+      transparent 0deg,
+      var(--mode-glow) 46deg,
+      var(--mode-glow-2) 96deg,
+      transparent 142deg,
+      transparent 220deg,
+      var(--mode-glow-soft) 282deg,
+      transparent 360deg
+    );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+}
+
+.input-container::after {
+  inset: -10px;
+  z-index: -2;
+  border-radius: 20px;
+  background:
+    radial-gradient(circle at var(--mode-x, 24%) 0%, var(--mode-glow-soft), transparent 34%),
+    radial-gradient(circle at calc(100% - var(--mode-x, 24%)) 100%, var(--mode-glow-soft-2), transparent 36%);
+  filter: blur(10px);
+}
+
 .input-container[data-agent-mode="flash"] {
+  --mode-glow: rgba(125, 211, 252, 0.96);
+  --mode-glow-2: rgba(96, 165, 250, 0.9);
+  --mode-glow-soft: rgba(125, 211, 252, 0.28);
+  --mode-glow-soft-2: rgba(168, 85, 247, 0.16);
   border-color: rgba(125, 211, 252, 0.72);
-  box-shadow: 0 0 0 1px rgba(125, 211, 252, 0.22), 0 0 24px rgba(125, 211, 252, 0.16);
+  box-shadow: 0 0 0 1px rgba(125, 211, 252, 0.22), 0 0 26px rgba(125, 211, 252, 0.16);
   background: rgba(125, 211, 252, 0.045);
+  animation: mode-flash-breathe 2.8s ease-in-out infinite;
 }
 .input-container[data-agent-mode="bench"] {
+  --mode-glow: rgba(245, 158, 11, 0.98);
+  --mode-glow-2: rgba(251, 191, 36, 0.92);
+  --mode-glow-soft: rgba(245, 158, 11, 0.28);
+  --mode-glow-soft-2: rgba(248, 113, 113, 0.15);
   border-color: rgba(245, 158, 11, 0.72);
-  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.22), 0 0 24px rgba(245, 158, 11, 0.16);
+  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.22), 0 0 26px rgba(245, 158, 11, 0.16);
   background: rgba(245, 158, 11, 0.045);
+  animation: mode-bench-breathe 3.6s ease-in-out infinite;
+}
+
+.input-container[data-agent-mode="flash"]::before,
+.input-container[data-agent-mode="bench"]::before {
+  opacity: 1;
+  animation: mode-edge-spin 4.5s linear infinite;
+}
+
+.input-container[data-agent-mode="flash"]::after,
+.input-container[data-agent-mode="bench"]::after {
+  opacity: 1;
+  animation: mode-aura-drift 5.8s ease-in-out infinite alternate;
+}
+
+.input-container[data-agent-mode="bench"]::before {
+  animation-duration: 6.2s;
+}
+
+.input-container[data-agent-mode="bench"]::after {
+  animation-duration: 7.2s;
+}
+
+@property --mode-spin {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+@property --mode-x {
+  syntax: "<percentage>";
+  inherits: false;
+  initial-value: 24%;
+}
+
+@keyframes mode-edge-spin {
+  to { --mode-spin: 360deg; }
+}
+
+@keyframes mode-aura-drift {
+  0% { --mode-x: 18%; transform: scale(0.985); }
+  100% { --mode-x: 82%; transform: scale(1.015); }
+}
+
+@keyframes mode-flash-breathe {
+  0%, 100% {
+    box-shadow: 0 0 0 1px rgba(125, 211, 252, 0.2), 0 0 22px rgba(125, 211, 252, 0.14);
+  }
+  50% {
+    box-shadow: 0 0 0 1px rgba(125, 211, 252, 0.34), 0 0 34px rgba(96, 165, 250, 0.23);
+  }
+}
+
+@keyframes mode-bench-breathe {
+  0%, 100% {
+    box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.2), 0 0 22px rgba(245, 158, 11, 0.14);
+  }
+  50% {
+    box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.34), 0 0 34px rgba(251, 191, 36, 0.22);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .input-container[data-agent-mode="flash"],
+  .input-container[data-agent-mode="bench"],
+  .input-container[data-agent-mode="flash"]::before,
+  .input-container[data-agent-mode="bench"]::before,
+  .input-container[data-agent-mode="flash"]::after,
+  .input-container[data-agent-mode="bench"]::after {
+    animation: none;
+  }
 }
 .composer-controls,
 .composer-input-row {
