@@ -1,11 +1,12 @@
 ---
 name: ase-deepmd
-description: Skills for running ASE molecular dynamics (MD) and structure optimisation using a DeePMD interatomic potential — input preparation, remote batch submission to Bohrium, and result collection.
+description: Skills for running ASE molecular dynamics (MD) and structure optimisation using a DeePMD interatomic potential — input preparation, remote batch submission via bohrium skill (preferred) or dpdisp (fallback), and result collection.
 metadata:
   tools:
     - run_bash
     - run_python_file
   dependent_skills:
+    - bohrium
     - dpdisp
   tags:
     - ase
@@ -18,19 +19,17 @@ metadata:
 
 # ASE / DeePMD Skill
 
-Two scripts handle ASE/DeePMD-specific work; submission is delegated to the `dpdisp` skill:
+Two scripts handle ASE/DeePMD-specific work; submission is delegated to the `bohrium` skill (preferred) or `dpdisp` skill (fallback):
 
 | Script | Role |
 |---|---|
 | `ase_deepmd_tools.py` | Prepare job directories; collect results; inspect config |
 | `run_ase_job.py` | Self-contained job runner shipped to the compute node |
-| `skills/dpdisp/` | Submit prepared directories via DPDispatcher (see `dpdisp-submit` skill) |
+| `skills/bohrium/` | Submit prepared directories via `bohr` CLI (preferred) |
+| `skills/dpdisp/` | Submit prepared directories via DPDispatcher (fallback, see `dpdisp-submit` skill) |
 
 `ase_deepmd_tools.py` and `run_ase_job.py` live alongside `config.yaml` and `.env`.
 Every command prints JSON to stdout and exits 0 on success, 1 on error.
-
-> **Note:** `bohrium_submit.py` (both the local copy and `skills/bohr/`) is deprecated.
-> Always use the `dpdisp-submit` skill with `submission.template.json` for new workflows.
 
 ---
 
@@ -38,7 +37,7 @@ Every command prints JSON to stdout and exits 0 on success, 1 on error.
 
 1. **Obtain structures** — supply a multi-frame extxyz (or any ASE-readable file).
 2. **Prepare job directories** — run `ase_deepmd_tools.py prepare_md` or `prepare_relax`.  By default the pretrained model is frozen with `dp --pt freeze --head Omat24` before being copied into each job directory, so the runtime `DP` calculator loads a single-task model (no `--head` needed).  Pass `--head none` to skip freezing.
-3. **Submit jobs** — generate a `submission.template.json` from the returned `calc_dir_list` and submit via the `dpdisp-submit` skill (see [Submission section](#submission-dpdisp-skill) below).
+3. **Submit jobs** — create a Bohrium job group and submit each job directory via `bohr job submit` (preferred), or generate a `submission.template.json` and submit via the `dpdisp-submit` skill (fallback). See [Submission section](#submission-bohrium-skill) below.
 4. **Collect results** — after jobs finish, run `collect_md` or `collect_relax`.
 
 ---
@@ -125,10 +124,116 @@ python ase_deepmd_tools.py prepare_relax \
 
 ---
 
-## 3. Submit via the dpdisp skill {#submission-dpdisp-skill}
+## 3. Submit via the bohrium skill (preferred) {#submission-bohrium-skill}
 
-Submission uses the `dpdisp` skill (DPDispatcher) with `BohriumContext`.
-`bohrium_submit.py` is deprecated — do not use it for new workflows.
+The primary submission method uses the `bohrium` skill (`bohr` CLI). It is simpler and more
+stable than the dpdisp-based workflow. Use dpdisp only when `bohr` CLI is unavailable or
+when targeting non-Bohrium backends (Slurm, PBS, etc.).
+
+### Required environment variables
+
+| Variable | Description |
+|---|---|
+| `BOHRIUM_PROJECT_ID` | Bohrium project ID (integer) |
+| `BOHRIUM_DEEPMD_ASE_MACHINE` | Machine type, e.g. `c32_m128_cpu` |
+| `BOHRIUM_DEEPMD_ASE_IMAGE` | Container image URI providing ASE + DeePMD |
+| `DEEPMD_MODEL_PATH` | Default local model path (used when `--model_path` is omitted) |
+
+Authentication is handled via `bohr login` (credentials stored in `~/.bohrium/credentials.yaml`).
+
+### MD jobs
+
+The `prepare_md` command returns a `batch_dir` (the common parent of all job dirs) and
+a `calc_dir_list` of individual job directories. `model.pt` is placed at the `batch_dir`
+level, shared by all jobs.
+
+```bash
+# Create a job group
+JOB_GROUP_ID=$(bohr job_group create -n "ase-md-batch" -p "$BOHRIUM_PROJECT_ID" | grep -oP '\d+')
+echo "$JOB_GROUP_ID" > .bohrium_job_group_id
+
+# Submit each job directory
+for CALC_DIR in <calc_dir_1> <calc_dir_2> ...; do
+    bohr job submit \
+        --project_id "$BOHRIUM_PROJECT_ID" \
+        --job_name "$(basename $CALC_DIR)" \
+        --machine_type "$BOHRIUM_DEEPMD_ASE_MACHINE" \
+        --image_address "$BOHRIUM_DEEPMD_ASE_IMAGE" \
+        --input_directory "$CALC_DIR/" \
+        --job_group_id "$JOB_GROUP_ID" \
+        --backward_files "trajectories,md_simulation.log,status.json,log,err" \
+        --command "python ../run_ase_job.py"
+done
+```
+
+> When `--remote_model_path` was used during preparation, the model is not in the job
+> directory — no extra action needed.
+
+### Relax jobs
+
+Same pattern as MD jobs. Use the `batch_dir` returned by `prepare_relax`:
+
+```bash
+for CALC_DIR in <relax_dir_1> <relax_dir_2> ...; do
+    bohr job submit \
+        --project_id "$BOHRIUM_PROJECT_ID" \
+        --job_name "$(basename $CALC_DIR)" \
+        --machine_type "$BOHRIUM_DEEPMD_ASE_MACHINE" \
+        --image_address "$BOHRIUM_DEEPMD_ASE_IMAGE" \
+        --input_directory "$CALC_DIR/" \
+        --job_group_id "$JOB_GROUP_ID" \
+        --backward_files "structure_optimized.cif,structure_optimization_traj.extxyz,optimization.log,status.json,log,err" \
+        --command "python ../run_ase_job.py"
+done
+```
+
+### Monitor and download results
+
+```bash
+GROUP_ID=$(cat .bohrium_job_group_id)
+
+# Poll until all jobs reach terminal state
+while true; do
+    OUTPUT=$(timeout 120 bohr job list -j "$GROUP_ID" --json 2>/dev/null)
+    TOTAL=$(echo "$OUTPUT" | jq 'length')
+    DONE=$(echo "$OUTPUT" | jq '[.[] | select(.status == "Finished" or .status == "Failed" or .status == "Cancelled" or .status == "Terminated")] | length')
+    FAILED=$(echo "$OUTPUT" | jq '[.[] | select(.status == "Failed" or .status == "Cancelled" or .status == "Terminated")] | length')
+    echo "[$(date '+%H:%M:%S')] $DONE/$TOTAL jobs done, $FAILED failed"
+    if [ "$DONE" -eq "$TOTAL" ] && [ "$TOTAL" -gt 0 ]; then
+        [ "$FAILED" -gt 0 ] && echo "$FAILED job(s) failed!" && break
+        echo "All $TOTAL jobs finished successfully!" && break
+    fi
+    sleep 60
+done
+
+# Download all results at once
+bohr job_group download -j "$GROUP_ID" -o ./output/
+```
+
+For long-running MD jobs, wrap submission + polling in `tmux`:
+
+```bash
+tmux new-session -d -s ase_md "bash -c '...submit+poll commands...'"
+tmux ls
+```
+
+### File manifests summary
+
+| Level | Files |
+|---|---|
+| **Per MD job** input | `structure.extxyz` `ase_input.json` `run_ase_job.py` `model.pt`* |
+| **Per Relax job** input | `structure.extxyz` `ase_input.json` `run_ase_job.py` `model.pt`* |
+| **MD output** | `trajectories` `md_simulation.log` `status.json` `log` `err` |
+| **Relax output** | `structure_optimized.cif` `structure_optimization_traj.extxyz` `optimization.log` `status.json` `log` `err` |
+
+(*) not needed when `--remote_model_path` was used during preparation.
+
+---
+
+## 3b. Submit via the dpdisp skill (fallback) {#submission-dpdisp-skill}
+
+Use this method only when `bohr` CLI is unavailable or when targeting non-Bohrium backends.
+See the `dpdisp` skill for full documentation.
 
 ### Required environment variables
 
@@ -141,14 +246,7 @@ Submission uses the `dpdisp` skill (DPDispatcher) with `BohriumContext`.
 | `BOHRIUM_DEEPMD_ASE_IMAGE` | Container image URI providing ASE + DeePMD |
 | `DEEPMD_MODEL_PATH` | Default local model path (used when `--model_path` is omitted) |
 
-### MD jobs
-
-The `prepare_md` command returns a `batch_dir` (the common parent of all job dirs) and
-a `calc_dir_list` of individual job directories.  `model.pt` is placed at the **`batch_dir`
-level**, shared by all jobs.  Set `work_base` to this `batch_dir` path and upload the model
-once via `forward_common_files`.
-
-`submission.template.json`:
+### MD jobs — submission.template.json
 
 ```json
 {
@@ -183,28 +281,14 @@ once via `forward_common_files`.
 }
 ```
 
-- `work_base` must be the `batch_dir` path returned by `prepare_md` (the directory that
-  contains `model.pt`, `run_ase_job.py`, and all per-job subdirectories).
-- `task_work_path` is the **basename** of each job directory (relative to `batch_dir`),
-  e.g. `md_20240324120000_abc12345`.  Add one entry per dir in `calc_dir_list`.
-- `forward_common_files` uploads `model.pt` and `run_ase_job.py` once from `batch_dir`
-  to the remote working directory (one level above each task dir).  `ase_input.json`
-  already references the model as `"../model.pt"`; `run_ase_job.py` is invoked as
-  `python ../run_ase_job.py` for the same reason.
-- Omit `model.pt` from `forward_common_files` when `--remote_model_path` was used during
-  preparation (the model already lives on the remote node).
-
-> **Before submitting:** verify that all `forward_common_files` are present in `batch_dir`:
-> ```bash
-> ls "<batch_dir>/model.pt" "<batch_dir>/run_ase_job.py"
-> ```
-> Both files must exist.  `prepare_md` / `prepare_relax` copies them automatically;
-> if either is missing, re-run the prepare step before proceeding with submission.
+- `work_base` must be the `batch_dir` path returned by `prepare_md`.
+- `task_work_path` is the **basename** of each job directory (relative to `batch_dir`).
+- `forward_common_files` uploads `model.pt` and `run_ase_job.py` once from `batch_dir`.
+- Omit `model.pt` from `forward_common_files` when `--remote_model_path` was used.
 
 ### Relax jobs
 
-Same structure as MD jobs.  Use the `batch_dir` returned by `prepare_relax` as `work_base`
-and add the task-level fields for each job in `calc_dir_list`:
+Same structure as MD jobs. Adjust `backward_files`:
 
 ```json
 {
@@ -222,18 +306,6 @@ and add the task-level fields for each job in `calc_dir_list`:
 }
 ```
 
-File manifests summary:
-
-| Level | Files |
-|---|---|
-| **`forward_common_files`** (at `work_base` / `batch_dir`) | `model.pt`* `run_ase_job.py` |
-| **`forward_files`** per MD task | `structure.extxyz` `ase_input.json` |
-| **`forward_files`** per Relax task | `structure.extxyz` `ase_input.json` |
-| **`backward_files`** MD | `trajectories` `md_simulation.log` `status.json` `log` `err` |
-| **`backward_files`** Relax | `structure_optimized.cif` `structure_optimization_traj.extxyz` `optimization.log` `status.json` `log` `err` |
-
-(*) omit from `forward_common_files` when `--remote_model_path` was used during preparation.
-
 ### Substitute, validate, and submit
 
 ```bash
@@ -245,14 +317,6 @@ uvx --with dpdispatcher dargs check -f dpdispatcher.entrypoints.submit.submissio
 
 # Always use --with oss2 for Bohrium jobs
 uvx --from dpdispatcher --with oss2 dpdisp submit submission.json
-```
-
-For long-running MD jobs, wrap in `tmux`:
-
-```bash
-tmux new-session -d -s ase_md \
-    "uvx --from dpdispatcher --with oss2 dpdisp submit submission.json"
-tmux ls
 ```
 
 ---
