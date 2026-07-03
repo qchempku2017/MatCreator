@@ -4319,10 +4319,9 @@ async function loadSkillGraphTab({ force = false } = {}) {
       id: edge.id,
       from: edge.from,
       to: edge.to,
-      label: edge.relation,
       arrows: "to",
       color: { color: "rgba(140, 160, 194, 0.45)", highlight: "#7dd3fc" },
-      font: { color: state.theme === "light" ? "#607086" : "#8ca0c2", size: 10, align: "middle" },
+      title: edge.relation || "related",
       smooth: { type: "dynamic" },
     })));
 
