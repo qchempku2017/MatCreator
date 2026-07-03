@@ -48,6 +48,7 @@ const sessionIdEl = document.getElementById("session-id");
 const sessionListEl = document.getElementById("session-list");
 const resetBtn = document.getElementById("reset-session");
 const workspaceCliToggle = document.getElementById("workspace-cli-toggle");
+const skillGraphOpenBtn = document.getElementById("skill-graph-open");
 const themeToggle = document.getElementById("theme-toggle");
 const refreshSessionsBtn = document.getElementById("refresh-sessions");
 const graphViewport = document.getElementById("graph-viewport");
@@ -94,6 +95,7 @@ let workspaceTerminal = null;
 let workspaceTerminalFit = null;
 let workspaceTerminalSocket = null;
 const structureTabs = new Map();
+let skillGraphTab = null;
 
 function autoResizeTextInput() {
   if (!textInput) return;
@@ -3067,6 +3069,10 @@ workspaceCliToggle?.addEventListener("click", () => {
   setWorkspaceCliOpen(workspaceCli?.classList.contains("hidden"));
 });
 
+skillGraphOpenBtn?.addEventListener("click", () => {
+  loadSkillGraphTab();
+});
+
 window.addEventListener("resize", resizeWorkspaceTerminal);
 
 async function refreshSessionFiles() {
@@ -3898,9 +3904,27 @@ function activateCenterTab(tabId) {
       }
     });
   }
+  if (tabId === "skill-graph" && skillGraphTab?.network) {
+    requestAnimationFrame(() => {
+      try {
+        skillGraphTab.network.fit({ animation: false });
+      } catch (_) {}
+    });
+  }
 }
 
 function closeCenterTab(tabId) {
+  if (tabId === "skill-graph" && skillGraphTab) {
+    skillGraphTab.network?.destroy();
+    skillGraphTab.button.remove();
+    skillGraphTab.panel.remove();
+    skillGraphTab = null;
+    if (state.activeCenterTabId === tabId) {
+      activateCenterTab("chat");
+    }
+    return;
+  }
+
   const tab = structureTabs.get(tabId);
   if (!tab) return;
 
@@ -3973,6 +3997,204 @@ function ensureStructureTab(item) {
   structureTabs.set(tabId, tab);
   activateCenterTab(tabId);
   return tab;
+}
+
+const SKILL_GRAPH_COLORS = {
+  capability: { background: "#3B82F6", border: "#2563EB", highlight: { background: "#60A5FA", border: "#93C5FD" } },
+  workflow: { background: "#8B5CF6", border: "#7C3AED", highlight: { background: "#A78BFA", border: "#C4B5FD" } },
+  procedure: { background: "#10B981", border: "#059669", highlight: { background: "#34D399", border: "#6EE7B7" } },
+  heuristic: { background: "#F59E0B", border: "#D97706", highlight: { background: "#FBBF24", border: "#FDE68A" } },
+  constraint: { background: "#EF4444", border: "#DC2626", highlight: { background: "#F87171", border: "#FCA5A5" } },
+  tool: { background: "#06B6D4", border: "#0891B2", highlight: { background: "#22D3EE", border: "#67E8F9" } },
+  generic: { background: "#475569", border: "#64748B", highlight: { background: "#64748B", border: "#94A3B8" } },
+};
+
+function skillGraphNodeColor(type) {
+  return SKILL_GRAPH_COLORS[type] || SKILL_GRAPH_COLORS.generic;
+}
+
+function renderSkillGraphDetail(node) {
+  if (!skillGraphTab?.detail) return;
+  if (!node) {
+    skillGraphTab.detail.innerHTML = `
+      <div class="skill-graph-empty">
+        Select a node to view details.
+      </div>
+    `;
+    return;
+  }
+
+  skillGraphTab.detail.innerHTML = "";
+  const title = document.createElement("h3");
+  title.textContent = node.title || node.label || "Untitled";
+
+  const meta = document.createElement("div");
+  meta.className = "skill-graph-detail-meta";
+  const metaItems = [
+    node.entry_type,
+    node.verification_status,
+    node.refinement_status,
+  ].filter(Boolean);
+  meta.textContent = metaItems.join(" / ");
+
+  const tags = document.createElement("div");
+  tags.className = "skill-graph-tags";
+  (node.tags || []).slice(0, 12).forEach((tag) => {
+    const chip = document.createElement("span");
+    chip.textContent = tag;
+    tags.appendChild(chip);
+  });
+
+  const content = document.createElement("p");
+  content.className = "skill-graph-detail-content";
+  content.textContent = node.content || "No content preview.";
+
+  const facts = document.createElement("dl");
+  facts.className = "skill-graph-facts";
+  const addFact = (key, value) => {
+    if (value === undefined || value === null || value === "") return;
+    const dt = document.createElement("dt");
+    dt.textContent = key;
+    const dd = document.createElement("dd");
+    dd.textContent = String(value);
+    facts.append(dt, dd);
+  };
+  addFact("Usage", node.usage_count);
+  addFact("Trust", node.trust_score);
+  addFact("Source", node.source_provenance);
+
+  skillGraphTab.detail.append(title, meta);
+  if (tags.children.length) skillGraphTab.detail.appendChild(tags);
+  skillGraphTab.detail.append(content, facts);
+}
+
+function ensureSkillGraphTab() {
+  if (skillGraphTab) {
+    activateCenterTab("skill-graph");
+    return skillGraphTab;
+  }
+
+  const tabId = "skill-graph";
+  const button = document.createElement("button");
+  button.className = "center-tab";
+  button.type = "button";
+  button.role = "tab";
+  button.dataset.tabId = tabId;
+  button.id = `tab-${tabId}`;
+  button.setAttribute("aria-selected", "false");
+  button.setAttribute("aria-controls", `${tabId}-panel`);
+  button.title = "Skill Graph";
+
+  const title = document.createElement("span");
+  title.className = "center-tab-title";
+  title.textContent = "Skill Graph";
+  button.appendChild(title);
+
+  const close = document.createElement("span");
+  close.className = "center-tab-close";
+  close.dataset.closeTabId = tabId;
+  close.setAttribute("aria-hidden", "true");
+  close.textContent = "×";
+  button.appendChild(close);
+
+  const panel = document.createElement("div");
+  panel.className = "center-tab-panel skill-graph-tab-panel";
+  panel.id = `${tabId}-panel`;
+  panel.role = "tabpanel";
+  panel.dataset.tabId = tabId;
+  panel.setAttribute("aria-labelledby", button.id);
+
+  const header = document.createElement("div");
+  header.className = "skill-graph-header";
+  const heading = document.createElement("div");
+  heading.innerHTML = '<div class="eyebrow">Knowledge</div><strong>Skill Graph</strong>';
+  const status = document.createElement("span");
+  status.className = "graph-status status-idle";
+  status.textContent = "idle";
+  header.append(heading, status);
+
+  const body = document.createElement("div");
+  body.className = "skill-graph-body";
+  const canvas = document.createElement("div");
+  canvas.className = "skill-graph-canvas";
+  const detail = document.createElement("aside");
+  detail.className = "skill-graph-detail";
+  body.append(canvas, detail);
+  panel.append(header, body);
+
+  centerTabs?.appendChild(button);
+  centerTabPanels?.appendChild(panel);
+  skillGraphTab = { button, panel, status, canvas, detail, network: null, nodeData: new Map(), loaded: false };
+  renderSkillGraphDetail(null);
+  activateCenterTab(tabId);
+  return skillGraphTab;
+}
+
+async function loadSkillGraphTab() {
+  const tab = ensureSkillGraphTab();
+  if (tab.loaded) return;
+  tab.status.textContent = "loading";
+  tab.status.className = "graph-status status-polling";
+  tab.canvas.innerHTML = '<div class="skill-graph-loading">Loading graph...</div>';
+
+  try {
+    const resp = await fetch("/api/skill-graph/data?limit=500");
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    tab.nodeData = new Map((data.nodes || []).map((node) => [node.id, node]));
+
+    const nodes = new DataSet((data.nodes || []).map((node) => ({
+      id: node.id,
+      label: node.label,
+      title: `${node.title}\n${node.entry_type}`,
+      color: skillGraphNodeColor(node.entry_type),
+      font: { color: state.theme === "light" ? "#132033" : "#e7edf7", size: 13, face: "Manrope" },
+      shape: "dot",
+      size: node.entry_type === "capability" || node.entry_type === "workflow" ? 18 : 13,
+    })));
+    const edges = new DataSet((data.edges || []).map((edge) => ({
+      id: edge.id,
+      from: edge.from,
+      to: edge.to,
+      label: edge.relation,
+      arrows: "to",
+      color: { color: "rgba(140, 160, 194, 0.45)", highlight: "#7dd3fc" },
+      font: { color: state.theme === "light" ? "#607086" : "#8ca0c2", size: 10, align: "middle" },
+      smooth: { type: "dynamic" },
+    })));
+
+    tab.canvas.innerHTML = "";
+    tab.network?.destroy();
+    tab.network = new Network(tab.canvas, { nodes, edges }, {
+      autoResize: true,
+      physics: {
+        enabled: true,
+        stabilization: { iterations: 160 },
+        barnesHut: { gravitationalConstant: -5600, springLength: 120, springConstant: 0.045 },
+      },
+      interaction: { hover: true, tooltipDelay: 180, navigationButtons: true, keyboard: false },
+      nodes: { borderWidth: 2 },
+      edges: { width: 1.6 },
+    });
+    tab.network.on("selectNode", (params) => {
+      renderSkillGraphDetail(tab.nodeData.get(params.nodes[0]));
+    });
+    tab.network.on("deselectNode", () => renderSkillGraphDetail(null));
+    tab.network.once("stabilizationIterationsDone", () => {
+      tab.network.fit({ animation: false });
+    });
+    tab.loaded = true;
+    tab.status.className = "graph-status status-idle";
+    tab.status.textContent = `${data.nodes?.length || 0} nodes / ${data.edges?.length || 0} edges`;
+  } catch (err) {
+    tab.status.className = "graph-status status-idle";
+    tab.status.textContent = "failed";
+    tab.canvas.innerHTML = "";
+    const error = document.createElement("div");
+    error.className = "skill-graph-loading";
+    error.textContent = `Failed to load graph: ${String(err.message || err)}`;
+    tab.canvas.appendChild(error);
+  }
 }
 
 centerTabs?.addEventListener("click", (event) => {

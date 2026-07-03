@@ -83,7 +83,7 @@ from matcreator.agents.session_log import build_session_log_export  # noqa: E402
 from matcreator.skill import ALL_SKILLS, PLANNING_SKILL_NAMES, refresh_skills, get_default_skill_names  # noqa: E402
 from matcreator.config import load_config, save_config, get_disabled_skills  # noqa: E402
 from matcreator.config import ENV_TO_YAML, YAML_TO_ENV, SENSITIVE_YAML_KEYS  # noqa: E402
-from matcreator.constants import GRAPH_AGENT_MODEL  # noqa: E402
+from matcreator.constants import GRAPH_AGENT_MODEL, KNOW_DO_GRAPH_DB  # noqa: E402
 from matcreator.knowledge.query import _get_kg  # noqa: E402
 from matcreator.knowledge.review import run_review_pipeline  # noqa: E402
 from matcreator.ports import get_adk_port, get_local_adk_command, get_web_port, get_worker_base_port  # noqa: E402
@@ -487,6 +487,96 @@ def _is_port_open(host: str = "127.0.0.1", port: int | None = None) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.settimeout(0.5)
         return s.connect_ex((host, port)) == 0
+
+
+def _entry_value(value):
+    return value.value if hasattr(value, "value") else value
+
+
+def _entry_preview(content: str | None, *, limit: int = 280) -> str:
+    preview = " ".join((content or "").split())
+    if len(preview) <= limit:
+        return preview
+    return preview[: limit - 3].rstrip() + "..."
+
+
+def _load_skill_graph_payload(*, limit: int = 400) -> dict:
+    graph = _get_kg()
+    nodes = []
+    included_ids: set[str] = set()
+    offset = 0
+    page_size = 200
+
+    while len(nodes) < limit:
+        page = graph.list(limit=page_size, offset=offset)
+        if not page:
+            break
+        for entry in page:
+            entry_type = _entry_value(entry.entry_type)
+            if entry_type == "memory":
+                continue
+            metadata = entry.metadata
+            nodes.append(
+                {
+                    "id": entry.id,
+                    "label": entry.title,
+                    "title": entry.title,
+                    "entry_type": entry_type,
+                    "content": _entry_preview(entry.content),
+                    "tags": entry.tags,
+                    "aliases": entry.aliases,
+                    "verification_status": _entry_value(metadata.verification_status),
+                    "refinement_status": _entry_value(metadata.refinement_status),
+                    "usage_count": metadata.usage_count,
+                    "source_provenance": metadata.source_provenance,
+                    "trust_score": metadata.trust_score,
+                }
+            )
+            included_ids.add(entry.id)
+            if len(nodes) >= limit:
+                break
+        if len(page) < page_size:
+            break
+        offset += len(page)
+
+    edges = []
+    if included_ids and KNOW_DO_GRAPH_DB.exists():
+        placeholders = ",".join("?" for _ in included_ids)
+        params = [*included_ids, *included_ids]
+        try:
+            with sqlite3.connect(KNOW_DO_GRAPH_DB) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    f"""
+                    SELECT id, source_id, target_id, relation, weight
+                    FROM edges
+                    WHERE source_id IN ({placeholders})
+                      AND target_id IN ({placeholders})
+                    """,
+                    params,
+                ).fetchall()
+        except sqlite3.Error:
+            rows = []
+        edges = [
+            {
+                "id": row["id"],
+                "from": row["source_id"],
+                "to": row["target_id"],
+                "relation": row["relation"],
+                "weight": row["weight"],
+            }
+            for row in rows
+        ]
+
+    stats = graph.stats()
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "limit": limit,
+        "truncated": stats.get("nodes", len(nodes)) > len(nodes),
+        "total_nodes": stats.get("nodes", len(nodes)),
+        "total_edges": stats.get("edges", len(edges)),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1170,6 +1260,19 @@ async def _worker_terminal_session(websocket: WebSocket, user_id: str) -> None:
 async def health_check():
     mode = os.environ.get("MATCREATOR_MODE", "local")
     return {"status": "ok", "mode": mode}
+
+
+@app.get("/api/skill-graph/data")
+async def get_skill_graph_data(
+    limit: int = Query(default=400, ge=1, le=1200),
+) -> JSONResponse:
+    try:
+        payload = await asyncio.to_thread(_load_skill_graph_payload, limit=limit)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return JSONResponse(payload)
+
+
 @app.on_event("startup")
 async def _on_startup() -> None:
     users_db.init_db()

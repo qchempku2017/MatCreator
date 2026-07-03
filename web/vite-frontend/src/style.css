@@ -287,6 +287,15 @@ body {
   justify-content: center;
 }
 
+.left-action-row a.icon-action-btn {
+  text-decoration: none;
+}
+
+.left-action-row .icon-action-btn:disabled {
+  cursor: progress;
+  opacity: 0.55;
+}
+
 .icon-action-btn svg {
   width: 16px;
   height: 16px;
@@ -682,6 +691,109 @@ body[data-theme="light"] .theme-icon-sun {
 .center-tab-panel.active {
   display: flex;
   flex-direction: column;
+}
+
+.skill-graph-tab-panel {
+  background: rgba(var(--panel-rgb), 0.72);
+  min-height: 0;
+}
+
+.skill-graph-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.skill-graph-header strong {
+  font-size: 14px;
+}
+
+.skill-graph-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.skill-graph-canvas {
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+  background: rgba(var(--panel-rgb), 0.42);
+}
+
+.skill-graph-detail {
+  border-left: 1px solid var(--border);
+  padding: 14px;
+  overflow-y: auto;
+  min-width: 0;
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.skill-graph-detail h3 {
+  font-size: 15px;
+  line-height: 1.25;
+  margin-bottom: 8px;
+}
+
+.skill-graph-detail-meta,
+.skill-graph-empty,
+.skill-graph-loading {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.skill-graph-loading {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  text-align: center;
+}
+
+.skill-graph-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 12px 0;
+}
+
+.skill-graph-tags span {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: 11px;
+  padding: 3px 7px;
+  background: rgba(125, 211, 252, 0.06);
+}
+
+.skill-graph-detail-content {
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.55;
+  margin: 12px 0;
+}
+
+.skill-graph-facts {
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1fr);
+  gap: 7px 10px;
+  font-size: 12px;
+}
+
+.skill-graph-facts dt {
+  color: var(--muted);
+}
+
+.skill-graph-facts dd {
+  min-width: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
 }
 
 .chat-area { flex: 1; min-height: 0; padding: 16px 20px 12px; overflow-y: auto; }
