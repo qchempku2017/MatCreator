@@ -80,7 +80,15 @@ from matcreator.agents.cancellation import (  # noqa: E402
 )
 from matcreator.agents.graph_logger import AgentGraphLogger  # noqa: E402
 from matcreator.agents.session_log import build_session_log_export  # noqa: E402
-from matcreator.skill import ALL_SKILLS, PLANNING_SKILL_NAMES, refresh_skills, get_default_skill_names  # noqa: E402
+from matcreator.skill import (  # noqa: E402
+    ALL_SKILLS,
+    PLANNING_SKILL_NAMES,
+    _MODULE_SKILLS_ROOT,
+    _discover_skill_dirs,
+    _skill_dir_map,
+    refresh_skills,
+    get_default_skill_names,
+)
 from matcreator.config import load_config, save_config, get_disabled_skills  # noqa: E402
 from matcreator.config import ENV_TO_YAML, YAML_TO_ENV, SENSITIVE_YAML_KEYS  # noqa: E402
 from matcreator.constants import GRAPH_AGENT_MODEL, KNOW_DO_GRAPH_DB  # noqa: E402
@@ -1968,6 +1976,218 @@ async def cancel_individual_step(
         "graph_updated": found,
         "message": f"Step {step_number} cancellation requested.",
     })
+
+
+def _skill_bundle_roots() -> list[Path]:
+    return [_MODULE_SKILLS_ROOT, workspace_skills_dir(), Path.home() / ".matcreator" / "skills"]
+
+
+def _resolve_skill_dir(skill_name: str) -> Path:
+    if not _SKILL_NAME_RE.match(skill_name):
+        raise HTTPException(status_code=400, detail=f"Invalid skill name: '{skill_name}'.")
+    skill_dir = _skill_dir_map().get(skill_name)
+    if skill_dir is None:
+        raise HTTPException(status_code=404, detail=f"Skill '{skill_name}' not found.")
+    resolved = skill_dir.resolve()
+    allowed = [root.expanduser().resolve() for root in _skill_bundle_roots()]
+    if not any(resolved.is_relative_to(root) for root in allowed):
+        raise HTTPException(status_code=403, detail="Skill path is outside editable skill roots.")
+    if not (resolved / "SKILL.md").is_file():
+        raise HTTPException(status_code=404, detail=f"Skill '{skill_name}' has no SKILL.md.")
+    return resolved
+
+
+def _split_skill_md(text: str) -> tuple[dict, str]:
+    if text.startswith("---"):
+        parts = text.split("---", 2)
+        if len(parts) == 3:
+            try:
+                frontmatter = yaml.safe_load(parts[1]) or {}
+            except yaml.YAMLError as exc:
+                raise HTTPException(status_code=422, detail=f"Invalid SKILL.md frontmatter: {exc}")
+            if not isinstance(frontmatter, dict):
+                frontmatter = {}
+            return frontmatter, parts[2].lstrip("\n")
+    return {}, text
+
+
+def _compose_skill_md(frontmatter: dict, body: str) -> str:
+    dumped = yaml.safe_dump(frontmatter, sort_keys=False, allow_unicode=False).strip()
+    return f"---\n{dumped}\n---\n{body.rstrip()}\n"
+
+
+def _skill_attachment_categories(skill_dir: Path) -> list[dict]:
+    categories = []
+    for folder in sorted(
+        (path for path in skill_dir.rglob("*") if path.is_dir() and not any(part.startswith(".") for part in path.relative_to(skill_dir).parts)),
+        key=lambda p: p.relative_to(skill_dir).as_posix(),
+    ):
+        if folder == skill_dir:
+            continue
+        files = []
+        for item in sorted(folder.iterdir(), key=lambda p: p.name):
+            if item.is_file():
+                stat = item.stat()
+                rel_path = item.relative_to(skill_dir).as_posix()
+                files.append({
+                    "path": rel_path,
+                    "name": item.name,
+                    "category": folder.relative_to(skill_dir).as_posix(),
+                    "size": stat.st_size,
+                })
+        categories.append({"name": folder.relative_to(skill_dir).as_posix(), "files": files})
+    return categories
+
+
+def _resolve_skill_relative_file(skill_dir: Path, relative_path: str) -> Path:
+    cleaned = relative_path.strip().lstrip("/")
+    if not cleaned or cleaned in {"SKILL.md", ".", ".."}:
+        raise HTTPException(status_code=400, detail="Invalid attachment path.")
+    target = (skill_dir / cleaned).resolve()
+    if not target.is_relative_to(skill_dir.resolve()) or target == skill_dir.resolve():
+        raise HTTPException(status_code=400, detail="Attachment path escapes the skill directory.")
+    return target
+
+
+def _sanitize_attachment_category(category: str) -> str:
+    cleaned = category.strip().strip("/")
+    if not cleaned or cleaned in {".", ".."}:
+        raise HTTPException(status_code=400, detail="Attachment category is required.")
+    parts = [_safe_upload_filename(part) for part in cleaned.split("/") if part.strip()]
+    if not parts:
+        raise HTTPException(status_code=400, detail="Attachment category is required.")
+    return "/".join(parts)
+
+
+class SkillGraphEditBody(BaseModel):
+    content: str
+    description: str | None = None
+    entry_type: str | None = None
+    skill_level: str | None = None
+    tags: list[str] = []
+    dependent_skills: list[str] = []
+    metadata: dict | None = None
+
+
+@app.get("/api/skill-graph/skills/{skill_name}/edit")
+async def get_skill_graph_skill_edit(skill_name: str) -> JSONResponse:
+    skill_dir = _resolve_skill_dir(skill_name)
+    text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+    frontmatter, body = _split_skill_md(text)
+    metadata = dict(frontmatter.get("metadata") or {})
+    known_skills = sorted({s.name for s in ALL_SKILLS if s.name != skill_name})
+    return JSONResponse({
+        "status": "ok",
+        "skill_name": skill_name,
+        "path": str(skill_dir),
+        "frontmatter": _json_ready(frontmatter),
+        "content": body,
+        "description": frontmatter.get("description", ""),
+        "entry_type": metadata.get("entry_type") or metadata.get("type") or "capability",
+        "skill_level": metadata.get("skill_level") or "L1",
+        "tags": metadata.get("tags") or [],
+        "dependent_skills": metadata.get("dependent_skills") or [],
+        "metadata": _json_ready(metadata),
+        "attachments": _skill_attachment_categories(skill_dir),
+        "available_skills": known_skills,
+        "entry_types": [
+            "capability",
+            "procedure",
+            "workflow",
+            "tool",
+            "repository",
+            "environment",
+            "dependency",
+            "data",
+            "analytical",
+            "heuristic",
+            "constraint",
+            "generic",
+        ],
+        "skill_levels": ["L1", "L2", "L3", "L4"],
+    })
+
+
+@app.put("/api/skill-graph/skills/{skill_name}/edit")
+async def update_skill_graph_skill_edit(skill_name: str, body: SkillGraphEditBody) -> JSONResponse:
+    skill_dir = _resolve_skill_dir(skill_name)
+    skill_md = skill_dir / "SKILL.md"
+    frontmatter, _ = _split_skill_md(skill_md.read_text(encoding="utf-8"))
+    frontmatter["name"] = skill_name
+    if body.description is not None:
+        frontmatter["description"] = body.description.strip()
+    metadata = dict(frontmatter.get("metadata") or {})
+    metadata.update(body.metadata or {})
+    if body.entry_type:
+        metadata["entry_type"] = body.entry_type
+        metadata.pop("type", None)
+    if body.skill_level:
+        metadata["skill_level"] = body.skill_level
+    metadata["tags"] = [str(tag).strip() for tag in body.tags if str(tag).strip()]
+    metadata["dependent_skills"] = [
+        str(dep).strip()
+        for dep in body.dependent_skills
+        if str(dep).strip() and str(dep).strip() != skill_name
+    ]
+    frontmatter["metadata"] = metadata
+    content = _compose_skill_md(frontmatter, body.content)
+    _validate_skill_md_name(content.encode("utf-8"), skill_name)
+    try:
+        skill_md.write_text(content, encoding="utf-8")
+        refresh_result = refresh_skills()
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to save skill: {exc}")
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Skill saved but failed to reload: {exc}")
+    return JSONResponse({"status": "ok", "skill_name": skill_name, "refresh": refresh_result})
+
+
+@app.post("/api/skill-graph/skills/{skill_name}/attachments")
+async def upload_skill_graph_attachment(
+    skill_name: str,
+    category: str = Form(...),
+    files: List[UploadFile] = File(default=[]),
+) -> JSONResponse:
+    skill_dir = _resolve_skill_dir(skill_name)
+    category_path = _sanitize_attachment_category(category)
+    upload_dir = (skill_dir / category_path).resolve()
+    if not upload_dir.is_relative_to(skill_dir.resolve()):
+        raise HTTPException(status_code=400, detail="Attachment category escapes the skill directory.")
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    written = []
+    try:
+        for file in files:
+            if not file.filename:
+                continue
+            safe_name = _safe_upload_filename(file.filename)
+            target = _available_upload_path(upload_dir, safe_name)
+            target.write_bytes(await file.read())
+            written.append(str(target.relative_to(skill_dir)))
+        refresh_result = refresh_skills()
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to upload attachment: {exc}")
+    finally:
+        for file in files:
+            await file.close()
+    return JSONResponse({"status": "ok", "skill_name": skill_name, "files": written, "refresh": refresh_result})
+
+
+@app.delete("/api/skill-graph/skills/{skill_name}/attachments")
+async def delete_skill_graph_attachment(skill_name: str, path: str = Query(...)) -> JSONResponse:
+    skill_dir = _resolve_skill_dir(skill_name)
+    target = _resolve_skill_relative_file(skill_dir, unquote(path))
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="Attachment not found.")
+    try:
+        target.unlink()
+        parent = target.parent
+        while parent != skill_dir and not any(parent.iterdir()):
+            parent.rmdir()
+            parent = parent.parent
+        refresh_result = refresh_skills()
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to delete attachment: {exc}")
+    return JSONResponse({"status": "ok", "skill_name": skill_name, "deleted": path, "refresh": refresh_result})
 
 
 @app.get("/api/skills")

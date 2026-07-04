@@ -4130,6 +4130,59 @@ function createSkillGraphObjectList(values, titleKey = "filename") {
   return list;
 }
 
+function skillGraphAttachmentPath(item) {
+  const folder = String(item?.folder || "").replace(/^\/+|\/+$/g, "");
+  const filename = item?.filename || item?.name || item?.id || "";
+  return folder ? `${folder}/${filename}` : filename;
+}
+
+function skillGraphAttachmentKind(item) {
+  return String(item?.kind || item?.metadata?.kind || "").toLowerCase();
+}
+
+function dedupeSkillGraphAttachments(values) {
+  const seen = new Set();
+  return (values || []).filter((item) => {
+    const key = skillGraphAttachmentPath(item) || JSON.stringify(item);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function createSkillGraphAttachmentList(values, folder = "") {
+  const items = dedupeSkillGraphAttachments(values);
+  if (!items.length) return null;
+  const list = document.createElement("div");
+  list.className = "skill-graph-object-list";
+  items.forEach((value, index) => {
+    const details = document.createElement("details");
+    const summary = document.createElement("summary");
+    const fullPath = skillGraphAttachmentPath(value);
+    const path = attachmentDisplayName(fullPath, folder || value?.folder) || `File ${index + 1}`;
+    const kind = skillGraphAttachmentKind(value);
+    summary.textContent = kind ? `${path} [${kind}]` : path;
+    details.append(summary, createSkillGraphMarkdown(value));
+    list.appendChild(details);
+  });
+  return list;
+}
+
+function groupSkillGraphAttachments(node) {
+  const grouped = new Map();
+  const add = (item, fallbackFolder = "") => {
+    const folder = item?.folder || fallbackFolder || "files";
+    if (!grouped.has(folder)) grouped.set(folder, []);
+    grouped.get(folder).push(item);
+  };
+  (node.assets || []).forEach((asset) => add(asset));
+  (node.scripts || []).forEach((script) => add(script, "scripts"));
+  return Array.from(grouped.entries())
+    .map(([folder, items]) => [folder, dedupeSkillGraphAttachments(items)])
+    .filter(([, items]) => items.length)
+    .sort(([a], [b]) => a.localeCompare(b));
+}
+
 function createSkillGraphLinks(nodeId) {
   const edges = skillGraphTab?.edges || [];
   const nodeData = skillGraphTab?.nodeData || new Map();
@@ -4167,6 +4220,390 @@ function createSkillGraphLinks(nodeId) {
     list.appendChild(row);
   });
   return list;
+}
+
+function csvToList(value) {
+  return String(value || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function listToCsv(values) {
+  return Array.isArray(values) ? values.join(", ") : "";
+}
+
+function createSkillGraphEditToggle(node) {
+  if (!node.skill_name) return null;
+  const host = document.createElement("section");
+  host.className = "skill-graph-edit-toggle skill-graph-detail-section";
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "ghost mini-btn";
+  button.textContent = "Edit";
+  button.addEventListener("click", () => {
+    skillGraphTab.detail.innerHTML = "";
+    const editorHost = document.createElement("section");
+    editorHost.className = "skill-graph-editor";
+    editorHost.innerHTML = "<h4>Edit Skill</h4><div class=\"skill-graph-editor-status\">Loading editor...</div>";
+    skillGraphTab.detail.appendChild(editorHost);
+    loadSkillGraphEditor(node, editorHost);
+  });
+  host.appendChild(button);
+  return host;
+}
+
+function skillGraphEditorSnapshot(host) {
+  return {
+    description: host.querySelector("[data-edit-field='description']")?.value || "",
+    entry_type: host.querySelector("[data-edit-field='entry_type']")?.value || "capability",
+    skill_level: host.querySelector("[data-edit-field='skill_level']")?.value || "L1",
+    tags: csvToList(host.querySelector("[data-edit-field='tags']")?.value),
+    dependent_skills: Array.from(host._skillGraphDependencySelected || []),
+    content: host.querySelector("[data-edit-field='content']")?.value || "",
+    pendingRemovals: Array.from(host.querySelectorAll("[data-attachment-path][aria-pressed='true']"))
+      .map((button) => button.dataset.attachmentPath),
+    uploadFolders: Array.from(host.querySelectorAll("[data-upload-folder]"))
+      .map((folder) => folder.dataset.uploadFolder)
+      .filter(Boolean),
+  };
+}
+
+function applySkillGraphEditorSnapshot(host, snapshot) {
+  const setValue = (field, value) => {
+    const el = host.querySelector(`[data-edit-field='${field}']`);
+    if (el) el.value = value;
+  };
+  setValue("description", snapshot.description || "");
+  setValue("entry_type", snapshot.entry_type || "capability");
+  setValue("skill_level", snapshot.skill_level || "L1");
+  setValue("tags", listToCsv(snapshot.tags));
+  setValue("content", snapshot.content || "");
+  const selectedDeps = new Set(snapshot.dependent_skills || []);
+  host._skillGraphDependencySelected = selectedDeps;
+  renderSkillGraphDependencyPicker(host, host._skillGraphDependencySkills || [], selectedDeps);
+  host.querySelectorAll("[data-attachment-path]").forEach((button) => {
+    const remove = (snapshot.pendingRemovals || []).includes(button.dataset.attachmentPath);
+    button.setAttribute("aria-pressed", String(remove));
+    button.closest(".skill-graph-attachment-row")?.classList.toggle("pending-remove", remove);
+  });
+  syncSkillGraphUploadFolders(host, snapshot.uploadFolders || host._skillGraphUploadFolders || []);
+}
+
+function renderSkillGraphDependencyPicker(host, skills, selected) {
+  const list = host.querySelector(".skill-graph-dependency-list");
+  const filter = host.querySelector("[data-dependency-filter]");
+  const selectedSet = selected instanceof Set ? selected : new Set(selected || []);
+  host._skillGraphDependencySkills = skills;
+  host._skillGraphDependencySelected = selectedSet;
+  const render = () => {
+    const query = (filter.value || "").trim().toLowerCase();
+    list.innerHTML = "";
+    skills
+      .filter((skill) => !query || skill.toLowerCase().includes(query) || selectedSet.has(skill))
+      .forEach((skill) => {
+        const label = document.createElement("label");
+        label.className = "skill-graph-dependency-row";
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.value = skill;
+        checkbox.dataset.dependencySkill = skill;
+        checkbox.checked = selectedSet.has(skill);
+        checkbox.addEventListener("change", () => {
+          if (checkbox.checked) selectedSet.add(skill);
+          else selectedSet.delete(skill);
+          host._skillGraphDependencySelected = selectedSet;
+          pushSkillGraphEditorHistory(host);
+          render();
+        });
+        const span = document.createElement("span");
+        span.textContent = skill;
+        label.append(checkbox, span);
+        list.appendChild(label);
+      });
+    if (!list.children.length) {
+      const empty = document.createElement("div");
+      empty.className = "skill-graph-editor-empty";
+      empty.textContent = "No matching skills.";
+      list.appendChild(empty);
+    }
+  };
+  if (!filter.dataset.boundDependencyFilter) {
+    filter.dataset.boundDependencyFilter = "true";
+    filter.addEventListener("input", render);
+  }
+  render();
+}
+
+function attachmentDisplayName(path, folder = "") {
+  const normalizedPath = String(path || "");
+  const normalizedFolder = String(folder || "").replace(/^\/+|\/+$/g, "");
+  const prefix = normalizedFolder ? `${normalizedFolder}/` : "";
+  return normalizedPath.startsWith(prefix) ? normalizedPath.slice(prefix.length) : normalizedPath.split("/").pop();
+}
+
+function syncSkillGraphUploadFolders(host, folders) {
+  const normalized = Array.from(new Set((folders || []).map((folder) => String(folder || "").trim()).filter(Boolean)));
+  host._skillGraphUploadFolders = normalized;
+  host.querySelectorAll("[data-upload-folder]").forEach((folderEl) => {
+    if (!normalized.includes(folderEl.dataset.uploadFolder)) folderEl.remove();
+  });
+  normalized.forEach((folder) => ensureSkillGraphFolderCard(host, folder));
+}
+
+function ensureSkillGraphFolderCard(host, folder) {
+  host._skillGraphPendingUploads ||= [];
+  const list = host.querySelector(".skill-graph-folder-list");
+  let card = Array.from(list.querySelectorAll("[data-upload-folder]"))
+    .find((item) => item.dataset.uploadFolder === folder);
+  if (card) return card;
+  card = document.createElement("div");
+  card.className = "skill-graph-folder-card";
+  card.dataset.uploadFolder = folder;
+  card.innerHTML = `
+    <div class="skill-graph-folder-header">
+      <span></span>
+      <label class="ghost mini-btn skill-graph-folder-add" title="Add files">
+        +
+        <input data-upload-files type="file" multiple />
+      </label>
+    </div>
+    <div class="skill-graph-folder-files"></div>
+    <div class="skill-graph-folder-pending"></div>
+  `;
+  card.querySelector(".skill-graph-folder-header span").textContent = folder;
+  card.querySelector("[data-upload-files]").addEventListener("change", (event) => {
+    const files = Array.from(event.target.files || []);
+    if (!files.length) return;
+    host._skillGraphPendingUploads.push({ folder, files });
+    event.target.value = "";
+    renderSkillGraphPendingUploads(host, folder);
+  });
+  list.appendChild(card);
+  return card;
+}
+
+function renderSkillGraphPendingUploads(host, folder) {
+  const card = Array.from(host.querySelectorAll("[data-upload-folder]"))
+    .find((item) => item.dataset.uploadFolder === folder);
+  if (!card) return;
+  const pendingEl = card.querySelector(".skill-graph-folder-pending");
+  const pending = (host._skillGraphPendingUploads || [])
+    .filter((item) => item.folder === folder)
+    .flatMap((item) => item.files);
+  pendingEl.innerHTML = "";
+  pending.forEach((file) => {
+    const item = document.createElement("div");
+    item.className = "skill-graph-pending-file";
+    item.textContent = file.name;
+    pendingEl.appendChild(item);
+  });
+}
+
+function addSkillGraphFolder(host) {
+  const input = host.querySelector("[data-new-folder-name]");
+  const folder = (input.value || "").trim().replace(/^\/+|\/+$/g, "");
+  if (!folder) return;
+  ensureSkillGraphFolderCard(host, folder);
+  host._skillGraphUploadFolders = Array.from(new Set([...(host._skillGraphUploadFolders || []), folder]));
+  input.value = "";
+  pushSkillGraphEditorHistory(host);
+}
+
+function pushSkillGraphEditorHistory(host) {
+  const edit = host._skillGraphEdit;
+  if (!edit || edit.applying) return;
+  edit.history = edit.history.slice(0, edit.index + 1);
+  edit.history.push(skillGraphEditorSnapshot(host));
+  edit.index = edit.history.length - 1;
+}
+
+function moveSkillGraphEditorHistory(host, direction) {
+  const edit = host._skillGraphEdit;
+  if (!edit) return;
+  const nextIndex = edit.index + direction;
+  if (nextIndex < 0 || nextIndex >= edit.history.length) return;
+  edit.applying = true;
+  edit.index = nextIndex;
+  applySkillGraphEditorSnapshot(host, edit.history[edit.index]);
+  edit.applying = false;
+}
+
+function renderSkillGraphEditor(host, node, data) {
+  const metadata = data.metadata || {};
+  const attachments = data.attachments || [];
+  host.innerHTML = `
+    <h4>Edit Skill</h4>
+    <div class="skill-graph-editor-actions">
+      <button type="button" class="ghost mini-btn" data-edit-action="cancel">Cancel</button>
+      <button type="button" class="primary mini-btn" data-edit-action="save">Save</button>
+    </div>
+    <label class="skill-graph-editor-field">Description
+      <input data-edit-field="description" type="text" />
+    </label>
+    <div class="skill-graph-editor-grid">
+      <label class="skill-graph-editor-field">Type
+        <select data-edit-field="entry_type"></select>
+      </label>
+      <label class="skill-graph-editor-field">Skill level
+        <select data-edit-field="skill_level"></select>
+      </label>
+    </div>
+    <label class="skill-graph-editor-field">Tags
+      <input data-edit-field="tags" type="text" placeholder="comma separated" />
+    </label>
+    <div class="skill-graph-editor-field">Dependencies
+      <input data-dependency-filter type="text" placeholder="filter skills" />
+      <div class="skill-graph-dependency-list"></div>
+    </div>
+    <label class="skill-graph-editor-field">SKILL.md body
+      <textarea data-edit-field="content" spellcheck="false"></textarea>
+    </label>
+    <div class="skill-graph-editor-attachments">
+      <strong>Attachments</strong>
+      <div class="skill-graph-new-folder">
+        <input data-new-folder-name type="text" placeholder="new folder, e.g. references/setup" />
+        <button type="button" class="ghost mini-btn" data-edit-action="add-folder">New folder</button>
+      </div>
+      <div class="skill-graph-folder-list"></div>
+    </div>
+    <div class="skill-graph-editor-status"></div>
+  `;
+
+  const typeSelect = host.querySelector("[data-edit-field='entry_type']");
+  (data.entry_types || []).forEach((type) => {
+    const option = document.createElement("option");
+    option.value = type;
+    option.textContent = type;
+    typeSelect.appendChild(option);
+  });
+  const levelSelect = host.querySelector("[data-edit-field='skill_level']");
+  (data.skill_levels || []).forEach((level) => {
+    const option = document.createElement("option");
+    option.value = level;
+    option.textContent = level;
+    levelSelect.appendChild(option);
+  });
+  host.querySelector("[data-edit-field='description']").value = data.description || "";
+  typeSelect.value = data.entry_type || "capability";
+  levelSelect.value = data.skill_level || "L1";
+  host.querySelector("[data-edit-field='tags']").value = listToCsv(data.tags || metadata.tags);
+  host.querySelector("[data-edit-field='content']").value = data.content || "";
+  renderSkillGraphDependencyPicker(host, data.available_skills || [], data.dependent_skills || metadata.dependent_skills || []);
+
+  const initialFolders = [];
+  attachments.forEach((category) => {
+    initialFolders.push(category.name);
+    const group = ensureSkillGraphFolderCard(host, category.name);
+    const filesEl = group.querySelector(".skill-graph-folder-files");
+    (category.files || []).forEach((file) => {
+      const row = document.createElement("div");
+      row.className = "skill-graph-attachment-row";
+      row.innerHTML = '<span></span><button type="button" class="ghost mini-btn" aria-pressed="false">Remove</button>';
+      row.querySelector("span").textContent = attachmentDisplayName(file.path, category.name);
+      const button = row.querySelector("button");
+      button.dataset.attachmentPath = file.path;
+      button.addEventListener("click", () => {
+        const pressed = button.getAttribute("aria-pressed") === "true";
+        button.setAttribute("aria-pressed", String(!pressed));
+        row.classList.toggle("pending-remove", !pressed);
+        pushSkillGraphEditorHistory(host);
+      });
+      filesEl.appendChild(row);
+    });
+  });
+  syncSkillGraphUploadFolders(host, initialFolders);
+
+  host._skillGraphEdit = {
+    skillName: node.skill_name,
+    nodeId: node.id,
+    history: [],
+    index: -1,
+    applying: false,
+  };
+  pushSkillGraphEditorHistory(host);
+
+  host.querySelectorAll("[data-edit-field]").forEach((field) => {
+    if (field.type === "file") return;
+    field.addEventListener("input", () => pushSkillGraphEditorHistory(host));
+    field.addEventListener("change", () => pushSkillGraphEditorHistory(host));
+  });
+  host.querySelector("[data-edit-action='cancel']").addEventListener("click", () => {
+    renderSkillGraphDetail(skillGraphTab?.nodeData.get(node.id) || node);
+  });
+  host.querySelector("[data-edit-action='save']").addEventListener("click", () => saveSkillGraphEditor(host));
+  host.querySelector("[data-edit-action='add-folder']").addEventListener("click", () => addSkillGraphFolder(host));
+  host.querySelector("[data-new-folder-name]").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      addSkillGraphFolder(host);
+    }
+  });
+  host.addEventListener("keydown", (event) => {
+    if (!event.ctrlKey && !event.metaKey) return;
+    const key = event.key.toLowerCase();
+    if (key === "z") {
+      event.preventDefault();
+      moveSkillGraphEditorHistory(host, event.shiftKey ? 1 : -1);
+    } else if (key === "y") {
+      event.preventDefault();
+      moveSkillGraphEditorHistory(host, 1);
+    }
+  });
+}
+
+async function loadSkillGraphEditor(node, host) {
+  try {
+    const resp = await fetch(`/api/skill-graph/skills/${encodeURIComponent(node.skill_name)}/edit`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    renderSkillGraphEditor(host, node, await resp.json());
+  } catch (err) {
+    host.innerHTML = `<h4>Edit Skill</h4><div class="skill-graph-editor-status error">Editor unavailable: ${String(err.message || err)}</div>`;
+  }
+}
+
+async function saveSkillGraphEditor(host) {
+  const edit = host._skillGraphEdit;
+  if (!edit) return;
+  const status = host.querySelector(".skill-graph-editor-status");
+  const saveButton = host.querySelector("[data-edit-action='save']");
+  const snapshot = skillGraphEditorSnapshot(host);
+  status.textContent = "Saving...";
+  status.classList.remove("error");
+  saveButton.disabled = true;
+  try {
+    const resp = await fetch(`/api/skill-graph/skills/${encodeURIComponent(edit.skillName)}/edit`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(snapshot),
+    });
+    if (!resp.ok) throw new Error(await resp.text());
+    for (const path of snapshot.pendingRemovals || []) {
+      const delResp = await fetch(`/api/skill-graph/skills/${encodeURIComponent(edit.skillName)}/attachments?path=${encodeURIComponent(path)}`, {
+        method: "DELETE",
+      });
+      if (!delResp.ok) throw new Error(await delResp.text());
+    }
+    for (const pending of host._skillGraphPendingUploads || []) {
+      const files = pending.files || [];
+      if (!files.length) continue;
+      const formData = new FormData();
+      formData.append("category", pending.folder || "references");
+      files.forEach((file) => formData.append("files", file));
+      const uploadResp = await fetch(`/api/skill-graph/skills/${encodeURIComponent(edit.skillName)}/attachments`, {
+        method: "POST",
+        body: formData,
+      });
+      if (!uploadResp.ok) throw new Error(await uploadResp.text());
+    }
+    status.textContent = "Saved.";
+    await refreshSkillGraphData({ selectedNodeId: edit.nodeId });
+  } catch (err) {
+    status.classList.add("error");
+    status.textContent = `Save failed: ${String(err.message || err)}`;
+  } finally {
+    saveButton.disabled = false;
+  }
 }
 
 function renderSkillGraphDetail(node) {
@@ -4237,10 +4674,13 @@ function renderSkillGraphDetail(node) {
     ["Script requirements", metadata.script_requirements],
   ]);
   const custom = createSkillGraphFacts([["Custom", metadata.custom]]);
+  const attachmentSections = groupSkillGraphAttachments(node)
+    .map(([folder, items]) => createSkillGraphSection(folder, [createSkillGraphAttachmentList(items, folder)]));
 
   skillGraphTab.detail.append(title, meta);
   if (tags.children.length) skillGraphTab.detail.appendChild(tags);
   const sections = [
+    createSkillGraphEditToggle(node),
     createSkillGraphSection("Content", [content]),
     createSkillGraphSection("Identity", [identity]),
     createSkillGraphSection("Quality", [quality]),
@@ -4251,8 +4691,7 @@ function renderSkillGraphDetail(node) {
     ]),
     createSkillGraphSection("Execution Context", [requirements]),
     createSkillGraphSection("Feedback", [createSkillGraphObjectList(metadata.feedback_log, "verdict")]),
-    createSkillGraphSection("Scripts", [createSkillGraphObjectList(node.scripts)]),
-    createSkillGraphSection("Assets", [createSkillGraphObjectList(node.assets)]),
+    ...attachmentSections,
     createSkillGraphSection("Custom Metadata", [custom]),
     createSkillGraphSection("Links", [createSkillGraphLinks(node.id)]),
   ].filter(Boolean);
@@ -4315,9 +4754,92 @@ function ensureSkillGraphTab() {
 
   centerTabs?.appendChild(button);
   centerTabPanels?.appendChild(panel);
-  skillGraphTab = { button, panel, status, canvas, detail, network: null, nodeData: new Map(), edges: [], loaded: false };
+  skillGraphTab = {
+    button,
+    panel,
+    status,
+    canvas,
+    detail,
+    network: null,
+    nodesDataSet: null,
+    edgesDataSet: null,
+    nodeData: new Map(),
+    edges: [],
+    loaded: false,
+  };
   activateCenterTab(tabId);
   return skillGraphTab;
+}
+
+function skillGraphNodeView(node, positions = {}) {
+  const position = positions[node.id];
+  return {
+    id: node.id,
+    label: node.label,
+    title: `${node.title}\n${node.entry_type}${node.enabled === false ? "\ndisabled" : ""}`,
+    color: skillGraphNodeColor(node.entry_type, node.enabled),
+    font: {
+      color: node.enabled === false
+        ? (state.theme === "light" ? "rgba(19, 32, 51, 0.42)" : "rgba(231, 237, 247, 0.42)")
+        : (state.theme === "light" ? "#132033" : "#e7edf7"),
+      size: 13,
+      face: "Manrope",
+    },
+    shape: "dot",
+    size: node.entry_type === "capability" || node.entry_type === "workflow" ? 18 : 13,
+    borderWidth: node.enabled === false ? 1 : 2,
+    ...(position ? { x: position.x, y: position.y } : {}),
+  };
+}
+
+function skillGraphEdgeView(edge, nodeData) {
+  return {
+    id: edge.id,
+    from: edge.from,
+    to: edge.to,
+    arrows: "to",
+    color: skillGraphEdgeColor(
+      nodeData.get(edge.from)?.enabled === false
+        || nodeData.get(edge.to)?.enabled === false
+    ),
+    title: edge.relation || "related",
+    smooth: { type: "dynamic" },
+  };
+}
+
+function syncSkillGraphDataSet(dataSet, items) {
+  const nextIds = new Set(items.map((item) => item.id));
+  const staleIds = dataSet.getIds().filter((id) => !nextIds.has(id));
+  if (staleIds.length) dataSet.remove(staleIds);
+  if (items.length) dataSet.update(items);
+}
+
+async function refreshSkillGraphData({ selectedNodeId = null } = {}) {
+  const tab = skillGraphTab;
+  if (!tab?.network || !tab.nodesDataSet || !tab.edgesDataSet) {
+    await loadSkillGraphTab({ force: true });
+    return;
+  }
+  const selected = selectedNodeId || tab.network.getSelectedNodes()[0] || null;
+  tab.status.textContent = "updating";
+  tab.status.className = "graph-status status-polling";
+  const resp = await fetch("/api/skill-graph/data?limit=500");
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  const data = await resp.json();
+  const positions = tab.network.getPositions();
+  tab.nodeData = new Map((data.nodes || []).map((node) => [node.id, node]));
+  tab.edges = data.edges || [];
+  tab.network.setOptions({ physics: { enabled: false } });
+  syncSkillGraphDataSet(tab.nodesDataSet, (data.nodes || []).map((node) => skillGraphNodeView(node, positions)));
+  syncSkillGraphDataSet(tab.edgesDataSet, (data.edges || []).map((edge) => skillGraphEdgeView(edge, tab.nodeData)));
+  tab.status.className = "graph-status status-idle";
+  tab.status.textContent = `${data.nodes?.length || 0} nodes / ${data.edges?.length || 0} edges`;
+  if (selected && tab.nodeData.has(selected)) {
+    tab.network.selectNodes([selected]);
+    renderSkillGraphDetail(tab.nodeData.get(selected));
+  } else {
+    renderSkillGraphDetail(null);
+  }
 }
 
 async function loadSkillGraphTab({ force = false } = {}) {
@@ -4328,6 +4850,8 @@ async function loadSkillGraphTab({ force = false } = {}) {
   tab.loaded = false;
   tab.network?.destroy();
   tab.network = null;
+  tab.nodesDataSet = null;
+  tab.edgesDataSet = null;
   renderSkillGraphDetail(null);
   tab.canvas.innerHTML = '<div class="skill-graph-loading">Loading graph...</div>';
 
@@ -4338,34 +4862,10 @@ async function loadSkillGraphTab({ force = false } = {}) {
     tab.nodeData = new Map((data.nodes || []).map((node) => [node.id, node]));
     tab.edges = data.edges || [];
 
-    const nodes = new DataSet((data.nodes || []).map((node) => ({
-      id: node.id,
-      label: node.label,
-      title: `${node.title}\n${node.entry_type}${node.enabled === false ? "\ndisabled" : ""}`,
-      color: skillGraphNodeColor(node.entry_type, node.enabled),
-      font: {
-        color: node.enabled === false
-          ? (state.theme === "light" ? "rgba(19, 32, 51, 0.42)" : "rgba(231, 237, 247, 0.42)")
-          : (state.theme === "light" ? "#132033" : "#e7edf7"),
-        size: 13,
-        face: "Manrope",
-      },
-      shape: "dot",
-      size: node.entry_type === "capability" || node.entry_type === "workflow" ? 18 : 13,
-      borderWidth: node.enabled === false ? 1 : 2,
-    })));
-    const edges = new DataSet((data.edges || []).map((edge) => ({
-      id: edge.id,
-      from: edge.from,
-      to: edge.to,
-      arrows: "to",
-      color: skillGraphEdgeColor(
-        tab.nodeData.get(edge.from)?.enabled === false
-          || tab.nodeData.get(edge.to)?.enabled === false
-      ),
-      title: edge.relation || "related",
-      smooth: { type: "dynamic" },
-    })));
+    const nodes = new DataSet((data.nodes || []).map(skillGraphNodeView));
+    const edges = new DataSet((data.edges || []).map((edge) => skillGraphEdgeView(edge, tab.nodeData)));
+    tab.nodesDataSet = nodes;
+    tab.edgesDataSet = edges;
 
     tab.canvas.innerHTML = "";
     tab.network?.destroy();
