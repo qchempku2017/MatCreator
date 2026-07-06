@@ -2,6 +2,32 @@
 
 <!-- version list -->
 
+## v2.7.0 (2026-07-06)
+
+### Features
+
+- Add/delete skill nodes (later shoulde be a 'dev' or 'admin' feature.)
+  ([`08e1d57`](https://github.com/AI4MS/MatCreator/commit/08e1d57720f08045d48b3dd9b534f8bb09ee8fe2))
+
+- Better l3/l4 node adding
+  ([`f17bcbb`](https://github.com/AI4MS/MatCreator/commit/f17bcbbcd0671e8a977179f153fc5c974f859112))
+
+- Edit skills in frontend
+  ([`15f17ca`](https://github.com/AI4MS/MatCreator/commit/15f17ca196a103cdd8e0c63ede935b568be8cb33))
+
+- Inner rendering of skill graph
+  ([`2475f82`](https://github.com/AI4MS/MatCreator/commit/2475f82c1c0ded24e52932365cc468db3183f296))
+
+- Remove edge names
+  ([`9c3b9ce`](https://github.com/AI4MS/MatCreator/commit/9c3b9cefc72c7f778db2901988b71316f4278627))
+
+- Skill graph rendering
+  ([`e43e8a1`](https://github.com/AI4MS/MatCreator/commit/e43e8a187270fe4d23a11e86175613c9ba32921d))
+
+- Transparent "disabled nodes"
+  ([`21eced6`](https://github.com/AI4MS/MatCreator/commit/21eced639dd6b8558ee2325f946a3fdd7fe16f04))
+
+
 ## v2.6.0 (2026-07-02)
 
 ### Bug Fixes
