@@ -2,6 +2,22 @@
 
 <!-- version list -->
 
+## v2.7.1 (2026-07-07)
+
+### Bug Fixes
+
+- Support official skill installation
+  ([`1a59f28`](https://github.com/AI4MS/MatCreator/commit/1a59f2813cb347bbd09bb3ae88519613e9dccd1a))
+
+### Chores
+
+- Update README
+  ([`566012b`](https://github.com/AI4MS/MatCreator/commit/566012bffee6c4eca6e095a538f23b1e8fb218ac))
+
+- Update UI
+  ([`fb854e9`](https://github.com/AI4MS/MatCreator/commit/fb854e9e5ed60e928552e498ef75bf7829cb120a))
+
+
 ## v2.7.0 (2026-07-06)
 
 ### Features
