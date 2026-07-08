@@ -31,6 +31,8 @@ const state = {
   agentMode: localStorage.getItem(AGENT_MODE_KEY) || "normal",
   theme: localStorage.getItem(THEME_KEY) || "dark",
   customWorkdir: "",
+  sessionSummaries: {},   // { sessionId: "summary text" }
+  summaryGeneratedFor: new Set(),  // sessionIds that have triggered summary generation
 };
 
 // ---------------------------------------------------------------------------
@@ -54,6 +56,7 @@ const refreshSessionsBtn = document.getElementById("refresh-sessions");
 const graphViewport = document.getElementById("graph-viewport");
 const graphDetail = document.getElementById("graph-detail");
 const centerTabs = document.getElementById("center-tabs");
+const centerTabsScroll = document.getElementById("center-tabs-scroll");
 const centerTabPanels = document.getElementById("center-tab-panels");
 const graphResizer = document.getElementById("graph-resizer");
 const graphStatusEl = document.getElementById("graph-status");
@@ -84,6 +87,8 @@ const fileExplorerCol   = document.getElementById("file-explorer-col");
 const colResizerGraph   = document.getElementById("col-resizer-graph");
 const colResizerSide    = document.getElementById("col-resizer-side");
 const colResizerFiles   = document.getElementById("col-resizer-files");
+const sessionSummaryText = document.getElementById("session-summary-text");
+const chatTab = document.getElementById("tab-chat");
 const filesColToggleBtn = document.getElementById("files-col-toggle");
 const knowledgeReviewBanner = document.getElementById("knowledge-review-banner");
 const knowledgeReviewText = document.getElementById("knowledge-review-text");
@@ -96,6 +101,10 @@ let workspaceTerminalFit = null;
 let workspaceTerminalSocket = null;
 const structureTabs = new Map();
 let skillGraphTab = null;
+
+function sessionTabTooltip(title) {
+  return `${title || "Chat"}\nDouble-click to edit session name`;
+}
 
 function autoResizeTextInput() {
   if (!textInput) return;
@@ -2202,11 +2211,9 @@ function hideLocalAuthControls() {
   await refreshAccess();
   renderUserDisplay();
   await loadSessions();
-  if (localStorage.getItem("mat_sessionId")) {
-    await loadSession(state.sessionId);
-    agentGraph.startPolling(state.sessionId);
-    planGraph.startPolling(state.sessionId);
-  }
+  // Don't auto-restore previous session on page load — start fresh
+  // User can click a session in the sidebar to switch to it
+  localStorage.removeItem("mat_sessionId");
 })();
 
 // ---------------------------------------------------------------------------
@@ -2228,6 +2235,7 @@ async function loadSessions() {
 }
 
 function renderSessionList(sessions) {
+  renderSessionList._lastSessions = sessions;
   sessionListEl.innerHTML = "";
   if (!Array.isArray(sessions) || !sessions.length) {
     sessionListEl.innerHTML = '<li class="empty">No sessions yet</li>';
@@ -2245,7 +2253,23 @@ function renderSessionList(sessions) {
 
       const content = document.createElement("div");
       content.className = "session-item-content";
-      content.textContent = state.isAdmin ? `${owner} / ${s.id}` : s.id;
+      const sessionLabel = state.isAdmin ? `${owner} / ${s.id}` : s.id;
+      const summary = s.summary || state.sessionSummaries[s.id];
+
+      const idLine = document.createElement("div");
+      idLine.className = "session-item-id";
+      idLine.textContent = sessionLabel;
+
+      if (summary) {
+        li.classList.add("has-summary");
+        const summaryLine = document.createElement("div");
+        summaryLine.className = "session-item-summary";
+        summaryLine.textContent = summary;
+        content.appendChild(summaryLine);
+        content.appendChild(idLine);
+      } else {
+        content.appendChild(idLine);
+      }
       li.appendChild(content);
 
       const logBtn = document.createElement("button");
@@ -2268,7 +2292,7 @@ function renderSessionList(sessions) {
       });
       li.appendChild(delBtn);
 
-      li.title = state.isAdmin ? `${owner} / ${s.id}` : s.id;
+      li.title = summary ? `${summary}\n${sessionLabel}` : sessionLabel;
       li.addEventListener("click", () => switchSession(s.id, owner));
       sessionListEl.appendChild(li);
     });
@@ -3251,6 +3275,140 @@ async function uploadFilesToSession(fileList) {
 }
 
 // ---------------------------------------------------------------------------
+// Session summary (experimental)
+// ---------------------------------------------------------------------------
+
+function renderSessionBanner(summary) {
+  if (!sessionSummaryText) return;
+  const defaultTitle = sessionSummaryText.dataset.defaultTitle || "Chat";
+  if (summary) {
+    sessionSummaryText.textContent = summary;
+    chatTab?.setAttribute("title", sessionTabTooltip(summary));
+    sessionSummaryText.classList.remove("session-summary-placeholder");
+    sessionSummaryText.classList.remove("typewriter", "typewriter-done");
+    sessionSummaryText.style.removeProperty("opacity");
+    sessionSummaryText.style.removeProperty("max-width");
+  } else {
+    sessionSummaryText.textContent = defaultTitle;
+    chatTab?.setAttribute("title", sessionTabTooltip(defaultTitle));
+    sessionSummaryText.classList.remove("session-summary-placeholder", "typewriter", "typewriter-done");
+    sessionSummaryText.style.removeProperty("opacity");
+    sessionSummaryText.style.removeProperty("max-width");
+  }
+}
+
+function runTypewriter(el, text) {
+  el.classList.remove("typewriter", "typewriter-done");
+  el.style.opacity = "";
+  el.style.maxWidth = "none";
+  el.textContent = text;
+  const fullW = el.scrollWidth;
+  el.style.maxWidth = "";
+  void el.offsetWidth;
+  const len = [...text].length;
+  el.style.setProperty("--tw-steps", len);
+  el.style.setProperty("--tw-width", fullW + "px");
+  el.textContent = text;
+  el.classList.add("typewriter");
+  el.addEventListener("animationend", function onEnd() {
+    el.removeEventListener("animationend", onEnd);
+    el.classList.remove("typewriter");
+    el.classList.add("typewriter-done");
+    el.style.removeProperty("--tw-steps");
+    el.style.removeProperty("--tw-width");
+  });
+}
+
+function startSummaryEdit() {
+  if (!sessionSummaryText || !chatTab || chatTab.querySelector("input")) return;
+  const isPlaceholder = sessionSummaryText.classList.contains("session-summary-placeholder");
+  const defaultTitle = sessionSummaryText.dataset.defaultTitle || "Chat";
+  const original = isPlaceholder || sessionSummaryText.textContent === defaultTitle ? "" : sessionSummaryText.textContent;
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = original;
+  input.className = "session-summary-input";
+  input.maxLength = 60;
+  input.placeholder = "Enter session name…";
+  const labelWidth = Math.ceil(sessionSummaryText.getBoundingClientRect().width);
+  input.style.width = `${Math.max(44, labelWidth)}px`;
+  input.addEventListener("click", (e) => e.stopPropagation());
+  input.addEventListener("dblclick", (e) => e.stopPropagation());
+  sessionSummaryText.style.display = "none";
+  chatTab.insertBefore(input, sessionSummaryText);
+  input.focus();
+  input.select();
+
+  const finish = async (save) => {
+    const newValue = input.value.trim();
+    input.remove();
+    sessionSummaryText.style.display = "";
+    if (save && newValue !== original) {
+      if (newValue) {
+        state.sessionSummaries[state.sessionId] = newValue;
+        state.summaryGeneratedFor.add(state.sessionId);
+        renderSessionBanner(newValue);
+        await saveSessionSummary(state.sessionId, newValue);
+      } else {
+        delete state.sessionSummaries[state.sessionId];
+        state.summaryGeneratedFor.delete(state.sessionId);
+        renderSessionBanner("");
+        await saveSessionSummary(state.sessionId, "");
+      }
+      renderSessionList._lastSessions && renderSessionList(renderSessionList._lastSessions);
+    } else if (!save) {
+      renderSessionBanner(original || state.sessionSummaries[state.sessionId] || "");
+    }
+  };
+
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); finish(true); }
+    else if (e.key === "Escape") { finish(false); }
+  });
+  input.addEventListener("blur", () => finish(true));
+}
+
+chatTab?.addEventListener("dblclick", (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  startSummaryEdit();
+});
+
+async function saveSessionSummary(sessionId, summary) {
+  try {
+    await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/summary`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ summary }),
+    });
+  } catch (_) {
+    // silently ignore
+  }
+}
+
+async function generateSessionSummary(sessionId) {
+  try {
+    const resp = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/summarize`, {
+      method: "POST",
+    });
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (data.summary) {
+      state.sessionSummaries[sessionId] = data.summary;
+      state.summaryGeneratedFor.add(sessionId);
+      // Only update banner if user is still on this session
+      if (sessionId === state.sessionId) {
+        renderSessionBanner(data.summary);
+      }
+      // Refresh session list to show summary
+      renderSessionList._lastSessions && renderSessionList(renderSessionList._lastSessions);
+    }
+  } catch (_) {
+    // silently ignore — summary is non-critical
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Session management
 // ---------------------------------------------------------------------------
 
@@ -3580,8 +3738,22 @@ async function loadSession(sessionId) {
       state.activeSessionUserId = sessionData.userId;
     }
     const events = sessionData.events || [];
+
+    // Show the session summary in the Chat tab when available.
+    if (sessionData.summary) {
+      state.sessionSummaries[sessionId] = sessionData.summary;
+      state.summaryGeneratedFor.add(sessionId);
+    }
+    const sessionSummary = sessionData.summary || state.sessionSummaries[sessionId] || "";
+    renderSessionBanner(sessionSummary);
+
     const graphNodes = await fetchSessionStepNodes(sessionId);
     renderSessionTimeline(events, graphNodes);
+
+    const hasUserMessage = events.some((event) => event?.author === "user");
+    if (hasUserMessage && !sessionSummary && !state.summaryGeneratedFor.has(sessionId)) {
+      generateSessionSummary(sessionId);
+    }
 
     await refreshSessionFiles();
     updateSessionWorkdirDisplay(sessionData);
@@ -3759,6 +3931,7 @@ async function sendMessage(message) {
   const timeline = [];
   let timelineContainer = null;
   let accText = "";
+  let summaryTriggered = false;
   const shownPlotPaths = new Set();
 
   try {
@@ -3814,6 +3987,11 @@ async function sendMessage(message) {
             } else if (p.text) {
               accText = mergeReplayedText(accText, p.text);
               upsertTimelineText(timeline, compactRepeatedPrefixSnapshots(accText));
+              // Trigger summary early: on first agent text output (after planning)
+              if (!summaryTriggered && !state.summaryGeneratedFor.has(state.sessionId) && !state.sessionSummaries[state.sessionId]) {
+                summaryTriggered = true;
+                generateSessionSummary(state.sessionId);
+              }
             }
 
             if (timeline.length > 0 && !timelineContainer) {
@@ -3883,7 +4061,7 @@ function structureTabTitle(path) {
 
 function activateCenterTab(tabId) {
   state.activeCenterTabId = tabId;
-  centerTabs?.querySelectorAll(".center-tab")?.forEach((tab) => {
+  centerTabsScroll?.querySelectorAll(".center-tab")?.forEach((tab) => {
     const active = tab.dataset.tabId === tabId;
     tab.classList.toggle("active", active);
     tab.setAttribute("aria-selected", String(active));
@@ -3990,7 +4168,7 @@ function ensureStructureTab(item) {
   canvas.className = "sv-canvas structure-tab-canvas";
 
   panel.append(header, canvas);
-  centerTabs?.appendChild(button);
+  centerTabsScroll?.appendChild(button);
   centerTabPanels?.appendChild(panel);
 
   const tab = { id: tabId, item, button, panel, canvas, meta, viewer: null };
@@ -5477,6 +5655,9 @@ async function _doNewSession(customWorkdir) {
   sessionIdEl.textContent = state.sessionId;
   chatArea.innerHTML = "";
   stepExecutionFeed.reset();
+  state.sessionSummaries = {};
+  state.summaryGeneratedFor = new Set();
+  renderSessionBanner("");
   renderSessionFilesTree([]);
   clearCurrentUploads();
   agentGraph.reset();
