@@ -84,6 +84,7 @@ def _load_web_main_server(monkeypatch, control_home: Path, data_root: Path, host
 
 
 def _create_session_db(path: Path, app_name: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path) as conn:
         conn.execute(
             """
@@ -158,6 +159,23 @@ def test_worker_image_check_detects_stale_container(monkeypatch, tmp_path):
     ) is True
 
 
+def test_server_worker_shared_mounts_parse_extra_binds(monkeypatch, tmp_path):
+    control_home = tmp_path / "control-plane" / ".matcreator"
+    control_home.mkdir(parents=True)
+    shared_dir = tmp_path / "share"
+    writable_dir = tmp_path / "scratch"
+    monkeypatch.setenv(
+        "MATCREATOR_WORKER_SHARED_MOUNTS",
+        f"{shared_dir}:/share,{writable_dir}:/scratch:rw",
+    )
+    web_main = _load_web_main_server(monkeypatch, control_home, tmp_path / "server-data")
+
+    mounts = web_main._worker_shared_mounts()
+
+    assert mounts[str(shared_dir)] == {"bind": "/share", "mode": "ro"}
+    assert mounts[str(writable_dir)] == {"bind": "/scratch", "mode": "rw"}
+
+
 def test_server_env_config_writes_worker_mounted_user_config(monkeypatch, tmp_path):
     control_home = tmp_path / "control-plane" / ".matcreator"
     control_home.mkdir(parents=True)
@@ -174,6 +192,24 @@ def test_server_env_config_writes_worker_mounted_user_config(monkeypatch, tmp_pa
     container_config = data_root / "users" / "alice" / ".matcreator" / "config.yaml"
     assert "FRONTEND_SET_FLAG: visible-to-worker" in host_config.read_text(encoding="utf-8")
     assert "FRONTEND_SET_FLAG: visible-to-worker" in container_config.read_text(encoding="utf-8")
+
+
+def test_server_session_summaries_are_scoped_to_user_home(monkeypatch, tmp_path):
+    control_home = tmp_path / "control-plane" / ".matcreator"
+    control_home.mkdir(parents=True)
+    data_root = tmp_path / "server-data"
+    web_main = _load_web_main_server(monkeypatch, control_home, data_root)
+    db_path = data_root / "users" / "alice" / ".matcreator" / ".adk" / "session.db"
+    _create_session_db(db_path, web_main.APP_NAME)
+
+    body = SimpleNamespace(summary="Manual summary")
+    asyncio.run(web_main.update_session_summary("session-1", body, user_id="alice"))
+
+    summary_path = data_root / "users" / "alice" / ".matcreator" / ".adk" / "session_summaries.json"
+    assert summary_path.exists()
+    assert web_main._get_session_summary("session-1", "alice") == "Manual summary"
+    sessions = web_main._query_session_summaries("alice")
+    assert sessions[0]["summary"] == "Manual summary"
 
 
 def test_local_adk_restart_env_uses_frontend_config(monkeypatch, tmp_path):

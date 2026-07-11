@@ -187,6 +187,28 @@ docker compose -f docker-compose.server.yml up -d
 
 Empty values use Docker defaults.
 
+### Shared host directories in workers
+
+To make a host directory available inside every worker, set
+`MATCREATOR_WORKER_SHARED_MOUNTS` before starting the control plane. Entries use
+the Docker bind-mount format:
+
+```text
+host_path:container_path[:ro|rw]
+```
+
+For example, to expose a repository-local `./share` directory as read-only
+`/share` in each worker:
+
+```bash
+mkdir -p share
+export MATCREATOR_WORKER_SHARED_MOUNTS="$(pwd)/share:/share:ro"
+docker compose -f docker-compose.server.yml up -d
+```
+
+Use comma-separated entries for multiple mounts. The host path must be the path
+as seen by the Docker daemon, not the control-plane container's internal path.
+
 ## Admin users
 
 By default, the display name `admin` has admin privileges. To customize:

@@ -239,6 +239,23 @@ rm -rf server-data
 - Use HTTPS for real deployments. The included nginx config is plain HTTP for local or internal-server setup.
 - Back up `MATCREATOR_HOST_DATA_ROOT`; worker containers should be considered replaceable.
 
+## Shared Worker Mounts
+
+Set `MATCREATOR_WORKER_SHARED_MOUNTS` to bind host directories into every worker
+container. Entries use `host_path:container_path[:ro|rw]` and are separated by
+commas.
+
+Example: expose a repository-local `./share` directory inside workers as
+read-only `/share`:
+
+```bash
+mkdir -p share
+export MATCREATOR_WORKER_SHARED_MOUNTS="$(pwd)/share:/share:ro"
+docker compose -f docker-compose.server.yml up -d
+```
+
+The host path must be visible to the Docker daemon.
+
 ## Configurable Ports
 
 Server-mode deployment supports configurable host-facing ports via environment variables:

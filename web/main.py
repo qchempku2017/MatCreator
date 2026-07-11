@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import fcntl
 import json
+import logging
 import os
 import pty
 import re
@@ -94,6 +95,8 @@ from matcreator.constants import GRAPH_AGENT_MODEL, KNOW_DO_GRAPH_DB  # noqa: E4
 from matcreator.knowledge.query import _get_kg  # noqa: E402
 from matcreator.knowledge.review import run_review_pipeline  # noqa: E402
 from matcreator.ports import get_adk_port, get_local_adk_command, get_web_port, get_worker_base_port  # noqa: E402
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="MatCreator Graph API", version="1.0.0")
 APP_NAME = "MatCreator"
@@ -206,6 +209,7 @@ _WORKER_IDLE_TIMEOUT_SECONDS = int(os.environ.get("MATCREATOR_WORKER_IDLE_TIMEOU
 _WORKER_MEM_LIMIT = os.environ.get("MATCREATOR_WORKER_MEM_LIMIT", "")
 _WORKER_CPUS = os.environ.get("MATCREATOR_WORKER_CPUS", "")
 _WORKER_PIDS_LIMIT = os.environ.get("MATCREATOR_WORKER_PIDS_LIMIT", "")
+_WORKER_SHARED_MOUNTS = os.environ.get("MATCREATOR_WORKER_SHARED_MOUNTS", "")
 _WORKSPACE_CLI_TIMEOUT_SECONDS = int(os.environ.get("MATCREATOR_WORKSPACE_CLI_TIMEOUT_SECONDS", "30"))
 _WORKSPACE_CLI_OUTPUT_LIMIT = int(os.environ.get("MATCREATOR_WORKSPACE_CLI_OUTPUT_LIMIT", "20000"))
 
@@ -358,6 +362,37 @@ def _worker_target_url(user_id: str, port: int | None = None) -> str:
             raise RuntimeError("host-port worker routing requires a host port")
         return f"http://127.0.0.1:{port}"
     return f"http://{_worker_container_name(user_id)}:{get_adk_port()}"
+
+
+def _worker_shared_mounts() -> dict[str, dict[str, str]]:
+    """Parse optional extra worker bind mounts.
+
+    Format: ``host_path:container_path[:ro|rw]`` entries separated by commas.
+    Example: ``/srv/matcreator/share:/share:ro``.
+    """
+    mounts: dict[str, dict[str, str]] = {}
+    for item in _WORKER_SHARED_MOUNTS.split(","):
+        raw = item.strip()
+        if not raw:
+            continue
+        parts = raw.rsplit(":", 2)
+        if len(parts) == 2:
+            host_path, container_path = parts
+            mode = "ro"
+        elif len(parts) == 3 and parts[2] in {"ro", "rw"}:
+            host_path, container_path, mode = parts
+        else:
+            raise RuntimeError(
+                "Invalid MATCREATOR_WORKER_SHARED_MOUNTS entry. "
+                "Use host_path:container_path[:ro|rw]."
+            )
+        if not host_path or not container_path.startswith("/"):
+            raise RuntimeError(
+                "Invalid MATCREATOR_WORKER_SHARED_MOUNTS entry. "
+                "Host path is required and container path must be absolute."
+            )
+        mounts[str(Path(host_path).expanduser())] = {"bind": container_path, "mode": mode}
+    return mounts
 
 
 def _iter_session_db_paths(user_id: str | None = None):
@@ -540,17 +575,19 @@ def ensure_worker_running(user_id: str) -> str:
         env_vars["MATCREATOR_USER_ID"] = user_id
 
         adk_port = get_adk_port()
+        volumes = {
+            str(user_home_host): {
+                "bind": str(_WORKER_MATCREATOR_HOME),
+                "mode": "rw",
+            },
+        }
+        volumes.update(_worker_shared_mounts())
         run_kwargs: dict = dict(
             image=_WORKER_IMAGE,
             command=["matcreator", "api-server", "--host", "0.0.0.0", "--port", str(adk_port)],
             name=name,
             environment=env_vars,
-            volumes={
-                str(user_home_host): {
-                    "bind": str(_WORKER_MATCREATOR_HOME),
-                    "mode": "rw",
-                },
-            },
+            volumes=volumes,
             detach=True,
             restart_policy={"Name": "unless-stopped"},
         )
@@ -1004,16 +1041,23 @@ import hashlib
 import tempfile
 
 
-def _load_summaries() -> dict[str, dict]:
+def _summary_path_for_user(user_id: str | None = None) -> Path:
+    if _MATCREATOR_MODE == "server" and user_id:
+        return _user_adk_dir(user_id) / "session_summaries.json"
+    return SUMMARIES_PATH
+
+
+def _load_summaries(user_id: str | None = None) -> dict[str, dict]:
     """Load session summaries from the JSON file.
 
     Returns dict of {session_id: {"summary": str, "content_hash": str}}.
     For backward compatibility, plain string values are also accepted.
     """
-    if not SUMMARIES_PATH.exists():
+    summaries_path = _summary_path_for_user(user_id)
+    if not summaries_path.exists():
         return {}
     try:
-        data = json.loads(SUMMARIES_PATH.read_text(encoding="utf-8"))
+        data = json.loads(summaries_path.read_text(encoding="utf-8"))
         # Normalize: support both old format (str) and new format (dict)
         result = {}
         for k, v in data.items():
@@ -1026,16 +1070,17 @@ def _load_summaries() -> dict[str, dict]:
         return {}
 
 
-def _save_summaries(data: dict[str, dict]) -> None:
+def _save_summaries(data: dict[str, dict], user_id: str | None = None) -> None:
     """Persist session summaries atomically via temp file + rename."""
-    SUMMARIES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    summaries_path = _summary_path_for_user(user_id)
+    summaries_path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(
-        dir=str(SUMMARIES_PATH.parent), suffix=".tmp", prefix="summaries_"
+        dir=str(summaries_path.parent), suffix=".tmp", prefix="summaries_"
     )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_path, str(SUMMARIES_PATH))
+        os.replace(tmp_path, str(summaries_path))
     except Exception:
         # Clean up temp file on failure
         try:
@@ -1045,29 +1090,40 @@ def _save_summaries(data: dict[str, dict]) -> None:
         raise
 
 
-def _get_session_summary(session_id: str) -> str:
+def _get_session_summary(session_id: str, user_id: str | None = None) -> str:
     """Get summary text for a single session, or empty string."""
-    entry = _load_summaries().get(session_id)
+    entry = _load_summaries(user_id).get(session_id)
     if isinstance(entry, dict):
         return entry.get("summary", "")
     return ""
 
 
-def _fetch_first_user_message(session_id: str) -> str:
+def _fetch_first_user_message(session_id: str, user_id: str | None = None) -> str:
     """Read the first user message text from the session DB."""
-    if not SESSION_DB_PATH.exists():
+    session_db_path = next((db for _, db in _iter_session_db_paths(user_id)), None)
+    if not session_db_path or not session_db_path.exists():
         return ""
     try:
-        with sqlite3.connect(SESSION_DB_PATH) as conn:
+        with sqlite3.connect(session_db_path) as conn:
             conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                """
-                SELECT event_data FROM events
-                WHERE app_name = ? AND session_id = ?
-                ORDER BY timestamp ASC
-                """,
-                (APP_NAME, session_id),
-            ).fetchall()
+            if _MATCREATOR_MODE == "server" and user_id:
+                rows = conn.execute(
+                    """
+                    SELECT event_data FROM events
+                    WHERE app_name = ? AND user_id = ? AND session_id = ?
+                    ORDER BY timestamp ASC
+                    """,
+                    (APP_NAME, user_id, session_id),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT event_data FROM events
+                    WHERE app_name = ? AND session_id = ?
+                    ORDER BY timestamp ASC
+                    """,
+                    (APP_NAME, session_id),
+                ).fetchall()
     except sqlite3.Error:
         return ""
 
@@ -1117,17 +1173,21 @@ def _llm_config() -> tuple[str, str | None, str | None]:
 
 
 @app.post("/api/sessions/{session_id}/summarize")
-async def summarize_session(session_id: str) -> JSONResponse:
+async def summarize_session(
+    session_id: str,
+    user_id: str = Query(default="", description="Current user ID; required to scope server-mode sessions."),
+) -> JSONResponse:
     """Generate a one-sentence summary from the session's first user message."""
     # Fetch canonical first message from DB
-    first_msg = _fetch_first_user_message(session_id)
+    scoped_user_id = user_id or None
+    first_msg = _fetch_first_user_message(session_id, scoped_user_id)
     if not first_msg:
         return JSONResponse({"summary": ""})
 
     content_hash = hashlib.md5(first_msg.encode()).hexdigest()[:12]
 
     # Return cached summary if content hash matches
-    summaries = _load_summaries()
+    summaries = _load_summaries(scoped_user_id)
     cached = summaries.get(session_id)
     if cached and isinstance(cached, dict) and cached.get("content_hash") == content_hash:
         return JSONResponse({"summary": cached["summary"]})
@@ -1161,7 +1221,7 @@ async def summarize_session(session_id: str) -> JSONResponse:
     # Persist with content hash (skip caching empty results so it retries next time)
     if summary:
         summaries[session_id] = {"summary": summary, "content_hash": content_hash}
-        _save_summaries(summaries)
+        _save_summaries(summaries, scoped_user_id)
 
     return JSONResponse({"summary": summary})
 
@@ -1171,21 +1231,26 @@ class UpdateSummaryBody(BaseModel):
 
 
 @app.put("/api/sessions/{session_id}/summary")
-async def update_session_summary(session_id: str, body: UpdateSummaryBody) -> JSONResponse:
+async def update_session_summary(
+    session_id: str,
+    body: UpdateSummaryBody,
+    user_id: str = Query(default="", description="Current user ID; required to scope server-mode sessions."),
+) -> JSONResponse:
     """Manually set, override, or clear the summary for a session."""
     text = body.summary.strip()
+    scoped_user_id = user_id or None
 
-    summaries = _load_summaries()
+    summaries = _load_summaries(scoped_user_id)
     if not text:
         # Clear summary
         summaries.pop(session_id, None)
-        _save_summaries(summaries)
+        _save_summaries(summaries, scoped_user_id)
         return JSONResponse({"summary": ""})
 
     existing = summaries.get(session_id, {})
     content_hash = existing.get("content_hash", "") if isinstance(existing, dict) else ""
     summaries[session_id] = {"summary": text, "content_hash": content_hash}
-    _save_summaries(summaries)
+    _save_summaries(summaries, scoped_user_id)
     return JSONResponse({"summary": text})
 
 
@@ -1206,7 +1271,8 @@ def _query_session_summaries_server(user_id: str | None = None) -> list[dict]:
                     """,
                     (APP_NAME,),
                 ).fetchall()
-            results.extend(_session_row_to_summary(r) for r in rows)
+            summaries = _load_summaries(owner_id)
+            results.extend(_session_row_to_summary(r, summaries) for r in rows)
         except sqlite3.Error:
             continue
 
@@ -1982,7 +2048,7 @@ async def get_user_session(user_id: str, session_id: str) -> JSONResponse:
         raise HTTPException(status_code=500, detail=f"Failed to read session: {exc}")
 
     summary = _session_row_to_summary(session)
-    summary["summary"] = _get_session_summary(session_id)
+    summary["summary"] = _get_session_summary(session_id, user_id if _MATCREATOR_MODE == "server" else None)
     summary["state"] = _load_json_field(session["state"], {})
     events = [
         _load_json_field(row["event_data"], {})

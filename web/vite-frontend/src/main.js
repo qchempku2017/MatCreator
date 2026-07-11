@@ -3376,7 +3376,9 @@ chatTab?.addEventListener("dblclick", (e) => {
 
 async function saveSessionSummary(sessionId, summary) {
   try {
-    await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/summary`, {
+    const owner = state.activeSessionUserId || state.userId || "";
+    const query = owner ? `?user_id=${encodeURIComponent(owner)}` : "";
+    await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/summary${query}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ summary }),
@@ -3388,7 +3390,9 @@ async function saveSessionSummary(sessionId, summary) {
 
 async function generateSessionSummary(sessionId) {
   try {
-    const resp = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/summarize`, {
+    const owner = state.activeSessionUserId || state.userId || "";
+    const query = owner ? `?user_id=${encodeURIComponent(owner)}` : "";
+    const resp = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/summarize${query}`, {
       method: "POST",
     });
     if (!resp.ok) return;
@@ -5900,6 +5904,14 @@ settingsEnvAdd?.addEventListener("click", () => {
   row.querySelector(".settings-env-key")?.focus();
 });
 
+function activeSettingsTabName() {
+  return document.querySelector(".settings-tab.active")?.dataset.tab || "profile";
+}
+
+function settingsTabRequiresBackendRestart(tabName) {
+  return ["llm", "env"].includes(tabName);
+}
+
 function openSettingsModal() {
   settingsModal.classList.remove("hidden");
   settingsUsername.value = state.displayName || "";
@@ -6207,6 +6219,8 @@ async function loadSettingsData() {
 }
 
 async function saveSettings() {
+  const activeTab = activeSettingsTabName();
+  const shouldRestartBackend = settingsTabRequiresBackendRestart(activeTab);
   const username = settingsUsername.value.trim();
   const nextDefaultWorkdir = document.getElementById("settings-default-workdir")?.value?.trim() || "";
   const extraSkills = Array.from(
@@ -6277,8 +6291,13 @@ async function saveSettings() {
       await applyLogin(username, null);
     }
     state.defaultWorkdir = nextDefaultWorkdir;
-    settingsStatus.textContent = "Saved ✓";
-    setTimeout(() => { settingsStatus.textContent = ""; }, 2000);
+    if (shouldRestartBackend) {
+      settingsStatus.textContent = "Saved. Restarting backend…";
+      await restartBackend();
+    } else {
+      settingsStatus.textContent = "Saved ✓";
+      setTimeout(() => { settingsStatus.textContent = ""; }, 2000);
+    }
   } catch (err) {
     settingsStatus.textContent = `Error: ${err.message}`;
   } finally {
@@ -6304,9 +6323,10 @@ async function _pollBackendReady(maxAttempts = 30, intervalMs = 2000) {
 }
 
 async function restartBackend() {
-  if (!settingsRestartBtn) return;
-  settingsRestartBtn.disabled = true;
-  settingsRestartBtn.textContent = "Restarting…";
+  if (settingsRestartBtn) {
+    settingsRestartBtn.disabled = true;
+    settingsRestartBtn.textContent = "Restarting…";
+  }
   settingsStatus.textContent = "Restarting backend…";
   try {
     const userQuery = state.userId ? `?user_id=${encodeURIComponent(state.userId)}` : "";
@@ -6318,8 +6338,10 @@ async function restartBackend() {
   } catch (err) {
     settingsStatus.textContent = `Restart failed: ${err.message}`;
   } finally {
-    settingsRestartBtn.disabled = false;
-    settingsRestartBtn.textContent = "↺ Restart Backend";
+    if (settingsRestartBtn) {
+      settingsRestartBtn.disabled = false;
+      settingsRestartBtn.textContent = "↺ Restart Backend";
+    }
   }
 }
 
@@ -6337,7 +6359,6 @@ document.querySelectorAll(".settings-tab").forEach((tab) => {
 if (settingsBtn) settingsBtn.addEventListener("click", openSettingsModal);
 if (settingsClose) settingsClose.addEventListener("click", closeSettingsModal);
 if (settingsSave) settingsSave.addEventListener("click", saveSettings);
-if (settingsRestartBtn) settingsRestartBtn.addEventListener("click", restartBackend);
 document.getElementById("settings-workdir-reset")?.addEventListener("click", () => {
   const wdInput = document.getElementById("settings-default-workdir");
   if (wdInput) wdInput.value = "";

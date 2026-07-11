@@ -74,6 +74,9 @@ services:
       - MATCREATOR_WORKER_MEM_LIMIT=${MATCREATOR_WORKER_MEM_LIMIT:-}
       - MATCREATOR_WORKER_CPUS=${MATCREATOR_WORKER_CPUS:-}
       - MATCREATOR_WORKER_PIDS_LIMIT=${MATCREATOR_WORKER_PIDS_LIMIT:-}
+      # Extra worker bind mounts, comma-separated: host_path:container_path[:ro|rw]
+      # Example: ${PWD}/share:/share:ro
+      - MATCREATOR_WORKER_SHARED_MOUNTS=${MATCREATOR_WORKER_SHARED_MOUNTS:-}
       # Port configuration — control-plane port and worker port range.
       - MATCREATOR_ADK_PORT=${MATCREATOR_ADK_PORT:-8000}
       - ADK_LOCAL_PORT=${MATCREATOR_ADK_PORT:-8000}
