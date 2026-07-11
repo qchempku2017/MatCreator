@@ -139,6 +139,7 @@ _PROTECTED_USER_ENV_KEYS = frozenset({
     "PYTHONPATH",
     "LD_LIBRARY_PATH",
     "MATCREATOR_HOME",
+    "MATCREATOR_MODULE_SKILLS_ROOT",
     "MATCREATOR_MODE",
     "MATCREATOR_USER_ID",
 })
@@ -500,7 +501,7 @@ def _worker_env_vars() -> dict[str, str]:
         "BOHRIUM_USERNAME", "BOHRIUM_PASSWORD", "BOHRIUM_PROJECT_ID",
         "BOHRIUM_VASP_IMAGE", "BOHRIUM_VASP_MACHINE",
         "BOHRIUM_DEEPMD_IMAGE", "BOHRIUM_DEEPMD_MACHINE", "DEEPMD_MODEL_PATH",
-        "KDG_EMBED_MODEL", "HF_HUB_OFFLINE",
+        "KDG_EMBED_MODEL", "HF_HUB_OFFLINE", "MATCREATOR_MODULE_SKILLS_ROOT",
     ]
     env_vars = {k: v for k in keys if (v := _runtime_env_value(k))}
     for key, value in _custom_env_from_config(load_config()).items():
