@@ -59,7 +59,6 @@ const centerTabs = document.getElementById("center-tabs");
 const centerTabsScroll = document.getElementById("center-tabs-scroll");
 const centerTabPanels = document.getElementById("center-tab-panels");
 const graphResizer = document.getElementById("graph-resizer");
-const graphStatusEl = document.getElementById("graph-status");
 const loginModal = document.getElementById("login-modal");
 const loginInput = document.getElementById("login-input");
 const loginPassword = document.getElementById("login-password");
@@ -578,7 +577,6 @@ class AgentGraphView {
 
   startPolling(sessionId) {
     this._currentSessionId = sessionId;
-    this._setStatus("polling");
     this._poll(sessionId);
     this._pollInterval = setInterval(() => this._poll(sessionId), 2000);
   }
@@ -588,7 +586,6 @@ class AgentGraphView {
       clearInterval(this._pollInterval);
       this._pollInterval = null;
     }
-    this._setStatus("idle");
   }
 
   async _poll(sessionId) {
@@ -612,15 +609,7 @@ class AgentGraphView {
     this._pendingFit = true;
     this._resizeSurface([], { 0: 1 });
     this._hideDetail();
-    this._setStatus("idle");
     this.stopPolling();
-  }
-
-  _setStatus(s) {
-    if (graphStatusEl) {
-      graphStatusEl.textContent = s;
-      graphStatusEl.className = `graph-status status-${s}`;
-    }
   }
 
   _showDetail(nodeId, options = {}) {
@@ -1721,12 +1710,7 @@ class ExecutionPlanView {
     if (Object.prototype.hasOwnProperty.call(options, "autoOpenBaselineKey")) {
       this._autoOpenBaselineKey = options.autoOpenBaselineKey || null;
     }
-    this._setStatus("polling");
-    return this._poll(sessionId).finally(() => {
-      if (sessionId === this._currentSessionId && !this._pollInterval) {
-        this._setStatus("idle");
-      }
-    });
+    return this._poll(sessionId);
   }
 
   stopPolling() {
@@ -1734,7 +1718,6 @@ class ExecutionPlanView {
       clearInterval(this._pollInterval);
       this._pollInterval = null;
     }
-    this._setStatus("idle");
   }
 
   async _poll(sessionId) {
@@ -1864,11 +1847,6 @@ class ExecutionPlanView {
   fitToView() {
     if (!this._network) return;
     this._network.fit({ animation: { duration: 300, easingFunction: "easeInOutQuad" } });
-  }
-
-  _setStatus(s) {
-    const el = document.getElementById("plan-graph-status");
-    if (el) { el.textContent = s; el.className = `graph-status status-${s}`; }
   }
 }
 

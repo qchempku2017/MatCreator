@@ -49,7 +49,7 @@
         <div class="graph-column" id="graph-column">
           <section class="card left-home-card">
             <div class="brand">
-              <div class="dot"></div>
+              <img class="brand-icon" src="/favicon.png" alt="MatCreator project icon">
               <div>
                 <div class="brand-title">MatCreator</div>
                 <div class="brand-sub">Plan · Execute · Review</div>
@@ -57,11 +57,8 @@
             </div>
           </section>
           <section class="card graph-card">
-            <div class="card-header">
-              <h2>Agent Graph</h2>
-              <span class="graph-status" id="graph-status">idle</span>
-            </div>
             <div class="graph-viewport" id="graph-viewport">
+              <h2 class="graph-panel-title">Agent Graph</h2>
               <div class="graph-surface" id="graph-surface">
                 <div id="agent-graph" class="graph-canvas"></div>
               </div>
@@ -249,7 +246,6 @@
           <div class="plan-graph-popup hidden" id="plan-graph-popup">
             <div class="plan-graph-popup-header">
               <span class="plan-graph-popup-title">Roadmap</span>
-              <span class="graph-status status-idle" id="plan-graph-status">idle</span>
               <div class="plan-graph-zoom-controls">
                 <button class="ghost plan-graph-zoom-btn" id="plan-graph-zoom-in" title="Zoom in">＋</button>
                 <button class="ghost plan-graph-zoom-btn" id="plan-graph-zoom-out" title="Zoom out">－</button>
