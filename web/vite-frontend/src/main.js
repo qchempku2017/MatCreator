@@ -1797,19 +1797,47 @@ class ExecutionPlanView {
       buckets[Math.min(col, columns - 1)].push([id, node, index]);
     });
     const maxRows = Math.max(...buckets.map((bucket) => bucket.length), 1);
+    const positions = new Map();
 
-    nodes.slice(0, 36).forEach(([id, node], index) => {
+    nodes.slice(0, 36).forEach(([id], index) => {
       const col = maxLevel > 0 ? levels[id] ?? 0 : index % columns;
       const row = maxLevel > 0
         ? buckets[Math.min(col, columns - 1)].findIndex(([bucketId]) => bucketId === id)
         : Math.floor(index / columns);
+      positions.set(id, {
+        x: 8 + ((Math.min(col, columns - 1) + 0.5) / columns) * 84,
+        y: 10 + ((Math.max(row, 0) + 0.5) / maxRows) * 80,
+      });
+    });
+
+    const svgNamespace = "http://www.w3.org/2000/svg";
+    const connections = document.createElementNS(svgNamespace, "svg");
+    connections.classList.add("plan-graph-thumbnail-connections");
+    connections.setAttribute("viewBox", "0 0 100 100");
+    connections.setAttribute("preserveAspectRatio", "none");
+    edges.forEach((edge) => {
+      const from = Array.isArray(edge) ? edge[0] : edge.from;
+      const to = Array.isArray(edge) ? edge[1] : edge.to;
+      const start = positions.get(from);
+      const end = positions.get(to);
+      if (!start || !end) return;
+      const line = document.createElementNS(svgNamespace, "line");
+      line.setAttribute("x1", start.x);
+      line.setAttribute("y1", start.y);
+      line.setAttribute("x2", end.x);
+      line.setAttribute("y2", end.y);
+      connections.appendChild(line);
+    });
+    thumb.appendChild(connections);
+
+    nodes.slice(0, 36).forEach(([id, node]) => {
+      const position = positions.get(id);
       const colors = PLAN_NODE_STATUS_COLORS[node.status || "pending"] || PLAN_NODE_STATUS_COLORS.pending;
       const dot = document.createElement("span");
       dot.className = "plan-graph-thumbnail-node";
-      dot.style.left = `${8 + ((Math.min(col, columns - 1) + 0.5) / columns) * 84}%`;
-      dot.style.top = `${10 + ((Math.max(row, 0) + 0.5) / maxRows) * 80}%`;
+      dot.style.left = `${position.x}%`;
+      dot.style.top = `${position.y}%`;
       dot.style.background = colors.bg;
-      dot.style.borderColor = colors.border;
       thumb.appendChild(dot);
     });
   }
