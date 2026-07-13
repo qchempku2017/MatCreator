@@ -1225,9 +1225,20 @@ const PLAN_NODE_STATUS_COLORS = {
   blocked:   { bg: "#1F2937", border: "#374151", font: "#4B5563" },
 };
 
+const PLAN_GRAPH_DEFAULT_LAYOUT = {
+  direction: "LR",
+  sortMethod: "directed",
+  nodeSpacing: 125,
+  levelSeparation: 200,
+  blockShifting: true,
+  edgeMinimization: true,
+};
+
 class ExecutionPlanView {
   constructor(containerId) {
     this._container = document.getElementById(containerId);
+    this._planNodes = new DataSet([]);
+    this._planEdges = new DataSet([]);
     this._network = null;
     this._pollInterval = null;
     this._didInitialFit = false;
@@ -1235,6 +1246,11 @@ class ExecutionPlanView {
     this._subgraphs = [];
     this._currentIndex = 0;
     this._hierarchicalMode = true;
+    this._latestGraphData = null;
+    this._latestGraphKey = null;
+    this._autoOpenOnNewGraph = false;
+    this._autoOpenBaselineKey = null;
+    this._renderLayoutKey = null;
     this._init();
   }
 
@@ -1242,14 +1258,7 @@ class ExecutionPlanView {
     if (!this._container) return;
     const options = {
       layout: {
-        hierarchical: {
-          direction: "LR",
-          sortMethod: "directed",
-          nodeSpacing: 120,
-          levelSeparation: 170,
-          blockShifting: true,
-          edgeMinimization: true,
-        },
+        hierarchical: { ...PLAN_GRAPH_DEFAULT_LAYOUT },
       },
       physics: { enabled: false },
       edges: {
@@ -1275,9 +1284,10 @@ class ExecutionPlanView {
     };
     this._network = new Network(
       this._container,
-      { nodes: new DataSet([]), edges: new DataSet([]) },
+      { nodes: this._planNodes, edges: this._planEdges },
       options
     );
+    this._network.on("beforeDrawing", (ctx) => this._drawCanvasGrid(ctx));
   }
 
   _computeLevels(nodeIds, rawEdges) {
@@ -1303,15 +1313,107 @@ class ExecutionPlanView {
     return levels;
   }
 
+  _breakLongToken(token, maxChars) {
+    const chunks = [];
+    for (let i = 0; i < token.length; i += maxChars) {
+      chunks.push(token.slice(i, i + maxChars));
+    }
+    return chunks;
+  }
+
+  _wrapLabel(text, maxChars = 24, maxLines = 5) {
+    const source = String(text || "").trim();
+    if (!source) return "";
+    const words = source
+      .replace(/[_/.-]+/g, (match) => `${match} `)
+      .split(/\s+/)
+      .filter(Boolean)
+      .flatMap((word) => word.length > maxChars ? this._breakLongToken(word, maxChars) : [word]);
+    const lines = [];
+    let current = "";
+    for (const word of words) {
+      const next = current ? `${current} ${word}` : word;
+      if (next.length <= maxChars) {
+        current = next;
+        continue;
+      }
+      if (current) lines.push(current);
+      current = word;
+      if (lines.length >= maxLines) break;
+    }
+    if (current && lines.length < maxLines) lines.push(current);
+    if (lines.length === maxLines && words.join(" ").length > lines.join(" ").length) {
+      lines[maxLines - 1] = `${lines[maxLines - 1].replace(/\s*.{0,2}$/, "")}...`;
+    }
+    return lines.join("\n");
+  }
+
+  _labelMetrics(nodeEntries) {
+    const labels = nodeEntries.map(([id, node]) => this._wrapLabel(node.label || id));
+    const lineCounts = labels.map((label) => Math.max(1, label.split("\n").length));
+    const longestLines = labels.map((label) => Math.max(...label.split("\n").map((line) => line.length), 1));
+    const maxLines = Math.max(...lineCounts, 1);
+    const maxLineChars = Math.max(...longestLines, 1);
+    const estimatedWidth = Math.min(260, Math.max(120, maxLineChars * 8 + 32));
+    const estimatedHeight = Math.max(42, maxLines * 18 + 22);
+    return {
+      labels,
+      maxLines,
+      maxLineChars,
+      estimatedWidth,
+      estimatedHeight,
+      nodeSpacing: Math.round(clamp(estimatedHeight + 36, 95, 175)),
+      levelSeparation: Math.round(clamp(estimatedWidth + 68, 180, 300)),
+      gridGapX: Math.round(clamp(estimatedWidth + 58, 180, 300)),
+      gridGapY: Math.round(clamp(estimatedHeight + 24, 70, 125)),
+    };
+  }
+
+  _drawCanvasGrid(ctx) {
+    if (!this._network || !this._container) return;
+    const width = this._container.clientWidth || 0;
+    const height = this._container.clientHeight || 0;
+    if (width <= 0 || height <= 0) return;
+
+    const topLeft = this._network.DOMtoCanvas({ x: 0, y: 0 });
+    const bottomRight = this._network.DOMtoCanvas({ x: width, y: height });
+    const scale = this._network.getScale() || 1;
+    const spacing = 72;
+    const startX = Math.floor(topLeft.x / spacing) * spacing;
+    const endX = Math.ceil(bottomRight.x / spacing) * spacing;
+    const startY = Math.floor(topLeft.y / spacing) * spacing;
+    const endY = Math.ceil(bottomRight.y / spacing) * spacing;
+    const isLight = document.body.dataset.theme === "light";
+
+    ctx.save();
+    ctx.strokeStyle = isLight ? "rgba(19, 32, 51, 0.12)" : "rgba(148, 163, 184, 0.16)";
+    ctx.lineWidth = 1 / scale;
+    ctx.setLineDash([6 / scale, 7 / scale]);
+    for (let x = startX; x <= endX; x += spacing) {
+      ctx.beginPath();
+      ctx.moveTo(x, startY);
+      ctx.lineTo(x, endY);
+      ctx.stroke();
+    }
+    for (let y = startY; y <= endY; y += spacing) {
+      ctx.beginPath();
+      ctx.moveTo(startX, y);
+      ctx.lineTo(endX, y);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
   _visNode(nodeId, node, level) {
     const status = node.status || "pending";
     const isRunning = status === "running";
     const colors = PLAN_NODE_STATUS_COLORS[status] || PLAN_NODE_STATUS_COLORS.pending;
     return {
       id: nodeId,
-      label: node.label || nodeId,
+      label: this._wrapLabel(node.label || nodeId),
       title: node.action || nodeId,
       level,
+      widthConstraint: { minimum: 110, maximum: 280 },
       color: {
         background: colors.bg,
         border: colors.border,
@@ -1321,6 +1423,26 @@ class ExecutionPlanView {
       shapeProperties: isRunning ? { borderDashes: [4, 3] } : {},
       borderWidth: isRunning ? 2.5 : 2,
     };
+  }
+
+  _graphContentKey(graphData) {
+    if (!graphData || typeof graphData.nodes !== "object") return null;
+    const rawEdges = graphData.edges || [];
+    const nodes = Object.entries(graphData.nodes)
+      .sort(([a], [b]) => String(a).localeCompare(String(b)))
+      .map(([id, node]) => ({
+        id,
+        label: node.label || "",
+        action: node.action || "",
+      }));
+    const edges = rawEdges
+      .map((e) => Array.isArray(e) ? { from: e[0], to: e[1] } : { from: e.from, to: e.to })
+      .sort((a, b) => `${a.from}->${a.to}`.localeCompare(`${b.from}->${b.to}`));
+    return JSON.stringify({ nodes, edges });
+  }
+
+  currentGraphKey() {
+    return this._latestGraphKey;
   }
 
   _extractConnectedSubgraphs(graphData) {
@@ -1389,9 +1511,12 @@ class ExecutionPlanView {
     if (!graphData || typeof graphData.nodes !== "object") return;
     const nodeEntries = Object.entries(graphData.nodes);
     if (nodeEntries.length === 0) return;
-
-    // Auto-show popup on first data
-    if (!this._didInitialFit && planGraphPopup?.classList.contains("hidden")) {
+    const graphKey = this._graphContentKey(graphData);
+    this._latestGraphData = graphData;
+    this._latestGraphKey = graphKey;
+    this._renderThumbnail(graphData);
+    if (this._autoOpenOnNewGraph && graphKey && graphKey !== this._autoOpenBaselineKey) {
+      this._autoOpenOnNewGraph = false;
       showPlanGraph();
     }
 
@@ -1405,14 +1530,41 @@ class ExecutionPlanView {
       this._structureKey = structureKey;
       this._subgraphs = this._extractConnectedSubgraphs(graphData);
       this._currentIndex = 0;
+    } else {
+      // The graph structure can stay the same while execution status changes.
+      // Refresh the node objects so _visNode() recomputes colors and styling.
+      this._subgraphs.forEach((subgraph) => {
+        Object.keys(subgraph.nodes).forEach((id) => {
+          if (graphData.nodes[id]) subgraph.nodes[id] = graphData.nodes[id];
+        });
+      });
     }
 
     if (this._subgraphs.length === 0) return;
-    this._renderCurrentSubgraph();
+    this._renderCurrentSubgraph(structureChanged);
     this._updateNavUI();
   }
 
-  _renderCurrentSubgraph() {
+  _syncPlanData(visNodes, visEdges, replaceAll = false) {
+    if (replaceAll) {
+      this._planNodes.clear();
+      this._planEdges.clear();
+      this._planNodes.add(visNodes);
+      this._planEdges.add(visEdges);
+      return;
+    }
+
+    const nextNodeIds = new Set(visNodes.map((node) => node.id));
+    const nextEdgeIds = new Set(visEdges.map((edge) => edge.id));
+    const staleNodeIds = this._planNodes.getIds().filter((id) => !nextNodeIds.has(id));
+    const staleEdgeIds = this._planEdges.getIds().filter((id) => !nextEdgeIds.has(id));
+    if (staleNodeIds.length) this._planNodes.remove(staleNodeIds);
+    if (staleEdgeIds.length) this._planEdges.remove(staleEdgeIds);
+    this._planNodes.update(visNodes);
+    this._planEdges.update(visEdges);
+  }
+
+  _renderCurrentSubgraph(structureChanged = false) {
     const sub = this._subgraphs[this._currentIndex];
     if (!sub) return;
 
@@ -1422,16 +1574,24 @@ class ExecutionPlanView {
     const levels = this._computeLevels(nodeIds, rawEdges);
     const maxLevel = Math.max(...Object.values(levels), 0);
     const noHierarchy = maxLevel === 0 && nodeIds.length > 1;
+    const metrics = this._labelMetrics(nodeEntries);
 
     let visNodes;
+    let layoutKey;
     if (noHierarchy) {
-      if (this._hierarchicalMode !== false) {
+      layoutKey = JSON.stringify({
+        mode: "grid",
+        gapX: metrics.gridGapX,
+        gapY: metrics.gridGapY,
+        count: nodeIds.length,
+      });
+      if (this._renderLayoutKey !== layoutKey) {
         this._network.setOptions({ layout: { hierarchical: false, randomSeed: 42 } });
-        this._hierarchicalMode = false;
       }
+      this._hierarchicalMode = false;
       const cols = Math.ceil(Math.sqrt(nodeIds.length));
-      const gapX = 260;
-      const gapY = 55;
+      const gapX = metrics.gridGapX;
+      const gapY = metrics.gridGapY;
       visNodes = nodeEntries.map(([id, n], i) => {
         const col = i % cols;
         const row = Math.floor(i / cols);
@@ -1443,21 +1603,23 @@ class ExecutionPlanView {
         };
       });
     } else {
-      if (this._hierarchicalMode !== true) {
+      layoutKey = JSON.stringify({
+        mode: "hierarchical",
+        nodeSpacing: metrics.nodeSpacing,
+        levelSeparation: metrics.levelSeparation,
+      });
+      if (this._renderLayoutKey !== layoutKey) {
         this._network.setOptions({
           layout: {
             hierarchical: {
-              direction: "LR",
-              sortMethod: "directed",
-              nodeSpacing: 120,
-              levelSeparation: 170,
-              blockShifting: true,
-              edgeMinimization: true,
+              ...PLAN_GRAPH_DEFAULT_LAYOUT,
+              nodeSpacing: metrics.nodeSpacing,
+              levelSeparation: metrics.levelSeparation,
             },
           },
         });
-        this._hierarchicalMode = true;
       }
+      this._hierarchicalMode = true;
       visNodes = nodeEntries.map(([id, n]) => this._visNode(id, n, levels[id] ?? 0));
     }
 
@@ -1474,18 +1636,21 @@ class ExecutionPlanView {
       };
     });
 
-    // Save camera before setData resets the layout
     let savedCamera = null;
+    let savedPositions = null;
     if (this._didInitialFit) {
       try {
         savedCamera = {
           position: this._network.getViewPosition(),
           scale: this._network.getScale(),
         };
+        savedPositions = this._network.getPositions(nodeIds);
       } catch (_) {}
     }
 
-    this._network.setData({ nodes: new DataSet(visNodes), edges: new DataSet(visEdges) });
+    const replaceAll = !this._didInitialFit || structureChanged || this._renderLayoutKey !== layoutKey;
+    this._syncPlanData(visNodes, visEdges, replaceAll);
+    this._renderLayoutKey = layoutKey;
 
     if (!this._didInitialFit) {
       this._network.fit({ animation: { duration: 300, easingFunction: "easeInOutQuad" } });
@@ -1496,6 +1661,15 @@ class ExecutionPlanView {
           position: savedCamera.position,
           scale: savedCamera.scale,
           animation: false,
+        });
+      }
+      if (savedPositions) {
+        requestAnimationFrame(() => {
+          Object.entries(savedPositions).forEach(([id, pos]) => {
+            if (nodeIds.includes(id) && Number.isFinite(pos.x) && Number.isFinite(pos.y)) {
+              this._network.moveNode(id, pos.x, pos.y);
+            }
+          });
         });
       }
     }
@@ -1534,11 +1708,25 @@ class ExecutionPlanView {
     }
   }
 
-  startPolling(sessionId) {
+  startPolling(sessionId, options = {}) {
+    this.stopPolling();
+    this.refresh(sessionId, options);
+  }
+
+  refresh(sessionId, options = {}) {
     this._currentSessionId = sessionId;
+    if (Object.prototype.hasOwnProperty.call(options, "autoOpenOnNewGraph")) {
+      this._autoOpenOnNewGraph = Boolean(options.autoOpenOnNewGraph);
+    }
+    if (Object.prototype.hasOwnProperty.call(options, "autoOpenBaselineKey")) {
+      this._autoOpenBaselineKey = options.autoOpenBaselineKey || null;
+    }
     this._setStatus("polling");
-    this._poll(sessionId);
-    this._pollInterval = setInterval(() => this._poll(sessionId), 2000);
+    return this._poll(sessionId).finally(() => {
+      if (sessionId === this._currentSessionId && !this._pollInterval) {
+        this._setStatus("idle");
+      }
+    });
   }
 
   stopPolling() {
@@ -1564,23 +1752,66 @@ class ExecutionPlanView {
     this._hierarchicalMode = true;
     this._network?.setOptions({
       layout: {
-        hierarchical: {
-          direction: "LR",
-          sortMethod: "directed",
-          nodeSpacing: 120,
-          levelSeparation: 170,
-          blockShifting: true,
-          edgeMinimization: true,
-        },
+        hierarchical: { ...PLAN_GRAPH_DEFAULT_LAYOUT },
       },
     });
-    this._network?.setData({ nodes: new DataSet([]), edges: new DataSet([]) });
+    this._planNodes.clear();
+    this._planEdges.clear();
     this._didInitialFit = false;
     this._structureKey = null;
+    this._renderLayoutKey = null;
     this._subgraphs = [];
     this._currentIndex = 0;
+    this._latestGraphData = null;
+    this._latestGraphKey = null;
+    this._autoOpenOnNewGraph = false;
+    this._autoOpenBaselineKey = null;
+    this._renderThumbnail(null);
     this._updateNavUI();
     this.stopPolling();
+  }
+
+  _renderThumbnail(graphData) {
+    const button = planGraphToggleBtn;
+    const thumb = planGraphThumbnailEl;
+    if (!button || !thumb) return;
+    thumb.innerHTML = "";
+    const nodes = graphData?.nodes && typeof graphData.nodes === "object"
+      ? Object.entries(graphData.nodes)
+      : [];
+    if (!nodes.length) {
+      button.classList.add("hidden");
+      button.setAttribute("aria-pressed", "false");
+      return;
+    }
+
+    button.classList.remove("hidden");
+    const edges = graphData.edges || [];
+    const nodeIds = nodes.map(([id]) => id);
+    const levels = this._computeLevels(nodeIds, edges);
+    const maxLevel = Math.max(...Object.values(levels), 0);
+    const columns = maxLevel > 0 ? maxLevel + 1 : Math.ceil(Math.sqrt(nodes.length));
+    const buckets = Array.from({ length: columns }, () => []);
+    nodes.forEach(([id, node], index) => {
+      const col = maxLevel > 0 ? levels[id] ?? 0 : index % columns;
+      buckets[Math.min(col, columns - 1)].push([id, node, index]);
+    });
+    const maxRows = Math.max(...buckets.map((bucket) => bucket.length), 1);
+
+    nodes.slice(0, 36).forEach(([id, node], index) => {
+      const col = maxLevel > 0 ? levels[id] ?? 0 : index % columns;
+      const row = maxLevel > 0
+        ? buckets[Math.min(col, columns - 1)].findIndex(([bucketId]) => bucketId === id)
+        : Math.floor(index / columns);
+      const colors = PLAN_NODE_STATUS_COLORS[node.status || "pending"] || PLAN_NODE_STATUS_COLORS.pending;
+      const dot = document.createElement("span");
+      dot.className = "plan-graph-thumbnail-node";
+      dot.style.left = `${8 + ((Math.min(col, columns - 1) + 0.5) / columns) * 84}%`;
+      dot.style.top = `${10 + ((Math.max(row, 0) + 0.5) / maxRows) * 80}%`;
+      dot.style.background = colors.bg;
+      dot.style.borderColor = colors.border;
+      thumb.appendChild(dot);
+    });
   }
 
   notifyLayoutChanged() {
@@ -1627,16 +1858,25 @@ async function requestStepCancellation(stepNumber) {
   }
 }
 
+function shouldRefreshPlanGraphForTool(toolName) {
+  return toolName === "validate_graph" || toolName === "validate_plan";
+}
+
 // ---------------------------------------------------------------------------
 // Plan graph popup toggle
 // ---------------------------------------------------------------------------
 
 const planGraphPopup = document.getElementById("plan-graph-popup");
 const planGraphToggleBtn = document.getElementById("plan-graph-toggle");
+const planGraphThumbnailEl = document.getElementById("plan-graph-thumbnail");
 const planGraphCloseBtn = document.getElementById("plan-graph-close");
 
 function showPlanGraph() {
   planGraphPopup?.classList.remove("hidden");
+  planGraphToggleBtn?.classList.add("is-open");
+  planGraphToggleBtn?.setAttribute("aria-pressed", "true");
+  planGraphToggleBtn?.setAttribute("title", "Close roadmap");
+  planGraphToggleBtn?.setAttribute("aria-label", "Close roadmap");
   requestAnimationFrame(() => {
     planGraph.notifyLayoutChanged();
     planGraph.fitToView();
@@ -1645,6 +1885,10 @@ function showPlanGraph() {
 
 function hidePlanGraph() {
   planGraphPopup?.classList.add("hidden");
+  planGraphToggleBtn?.classList.remove("is-open");
+  planGraphToggleBtn?.setAttribute("aria-pressed", "false");
+  planGraphToggleBtn?.setAttribute("title", "Open roadmap");
+  planGraphToggleBtn?.setAttribute("aria-label", "Open roadmap");
 }
 
 planGraphToggleBtn?.addEventListener("click", () => {
@@ -3914,11 +4158,15 @@ async function sendMessage(message) {
     stepExecutionFeed.finishLiveTurn();
     return;
   }
+  const previousPlanGraphKey = planGraph.currentGraphKey();
   agentGraph.reset();
   planGraph.reset();
   const liveTurnContainer = stepExecutionFeed.startLiveTurn(userMessageEl, liveStartedAt);
   agentGraph.startPolling(state.sessionId);
-  planGraph.startPolling(state.sessionId);
+  planGraph.startPolling(state.sessionId, {
+    autoOpenOnNewGraph: true,
+    autoOpenBaselineKey: previousPlanGraphKey,
+  });
 
   const controller = new AbortController();
   setSendingState(true, controller);
@@ -3988,6 +4236,9 @@ async function sendMessage(message) {
                 name: fr.name || "Unknown",
                 response: fr.response || {},
               });
+              if (shouldRefreshPlanGraphForTool(fr.name)) {
+                planGraph.refresh(state.sessionId);
+              }
             } else if (p.text) {
               accText = mergeReplayedText(accText, p.text);
               upsertTimelineText(timeline, compactRepeatedPrefixSnapshots(accText));
@@ -4019,7 +4270,12 @@ async function sendMessage(message) {
           for (const p of parts) {
             if (p.thought) upsertTimelineThought(timeline, p.text || "");
             else if (p.functionCall) upsertTimelineEvent(timeline, { type: "function_call", id: p.functionCall.id, name: p.functionCall.name || "Unknown", args: p.functionCall.args || {} });
-            else if (p.functionResponse) upsertTimelineEvent(timeline, { type: "function_response", id: p.functionResponse.id, name: p.functionResponse.name || "Unknown", response: p.functionResponse.response || {} });
+            else if (p.functionResponse) {
+              upsertTimelineEvent(timeline, { type: "function_response", id: p.functionResponse.id, name: p.functionResponse.name || "Unknown", response: p.functionResponse.response || {} });
+              if (shouldRefreshPlanGraphForTool(p.functionResponse.name)) {
+                planGraph.refresh(state.sessionId);
+              }
+            }
             else if (p.text) { accText = mergeReplayedText(accText, p.text); upsertTimelineText(timeline, compactRepeatedPrefixSnapshots(accText)); }
             if (timeline.length > 0 && !timelineContainer) timelineContainer = addAgentTimelineMessage(timeline, shownPlotPaths, undefined, liveTurnContainer);
             else if (timelineContainer) renderTimeline(timelineContainer, timeline, shownPlotPaths);
