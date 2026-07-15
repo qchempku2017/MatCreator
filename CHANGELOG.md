@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v2.10.1 (2026-07-15)
+
+### Bug Fixes
+
+- Issues with frontend
+  ([`6a09a5d`](https://github.com/AI4MS/MatCreator/commit/6a09a5d02c0b8cd327eab0745856e38823db7d28))
+
+
 ## v2.10.0 (2026-07-15)
 
 ### Bug Fixes
