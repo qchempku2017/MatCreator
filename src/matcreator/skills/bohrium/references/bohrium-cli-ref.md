@@ -17,12 +17,22 @@ bohr job submit \
 ```
 
 Options:
-- `--machine_type`: `c2_m4_cpu`, `c4_m15_1`, `c32_m64_cpu`, or with GPU: `c4_m15_1 * NVIDIA V100_32g`
-- `--max_run_time`: in minutes
-- `--backward_files`: comma-separated string (NOT array)
-- `--input_directory`: local dir to upload as job input
-- `--nnode`: number of nodes (default 1)
-- `--max_reschedule_times`: auto-retry count
+- `--job_name`: name of the job
+- `--project_id`: project ID
+- `--image_address`: image address on bohrium.
+- `--machine_type`: `c2_m4_cpu`, `c4_m15_1`, `c32_m64_cpu`, or with GPU: `1 * NVIDIA L20_48g`, `1 * NVIDIA V100_32g`
+- `--max_run_time`: in minutes. Default is unlimited.
+- `--command`: command to run in the container.
+- `--backward_files`: comma-separated string (NOT array). Should include all critical result files,
+   log files and directories. Supports "*" wildcard. Example: `"output,log,*.csv"`.
+- `--input_directory`: local dir to upload as job input. Usually uses the current directory `./`,
+   which means all files in the current directory will be uploaded, and you have to make sure to `cd`
+   into the right directory before running `bohr job submit` from there.
+- `--nnode`: number of compute nodes to use for the job (default 1, more than 1 not tested and not recommended)
+- `--max_reschedule_times`: auto-retry count if submission fails (default 0)
+
+> **Note**: `bohr job submit` prints out the job ID and the job group ID when finished.
+> Keep these IDs along with the job name for quick reference in job management.
 
 ## Job Management
 
@@ -64,7 +74,8 @@ bohr image list                            # List available images
 
 ## Notes
 
-- API endpoint `openapi.dp.tech` is slow — wrap commands with `timeout 60-120`
+- API endpoint `openapi.dp.tech` is slow — wrap commands with `timeout 60-120`.
+  When submitting very large directories, it may require even longer timeouts.
 - `bohr project list` without `--json` opens interactive TUI that hangs in non-terminal
-- Job logs include `log.lammps` (LAMMPS output) and `STDOUTERR` (shell stdout/stderr)
-- Results are downloaded as a zip to the specified output directory
+- Job logs include the log file as specified in `bohr job submit` options and `STDOUTERR` (shell stdout/stderr)
+- Results are downloaded as a zip file to the specified output directory, may need to extract.
