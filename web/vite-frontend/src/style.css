@@ -7,7 +7,7 @@
   --accent: #7dd3fc;
   --accent-2: #60a5fa;
   --border: rgba(255, 255, 255, 0.08);
-  --radius: 16px;
+  --radius: 8px;
   --panel-shadow: 0 12px 60px rgba(0, 0, 0, 0.4);
   --popup-shadow: 0 18px 70px rgba(0, 0, 0, 0.58), 0 0 0 1px rgba(125, 211, 252, 0.06);
   --modal-overlay: rgba(6, 8, 15, 0.88);
@@ -27,7 +27,7 @@ body[data-theme="light"] {
   --accent: #0ea5e9;
   --accent-2: #2563eb;
   --border: rgba(19, 32, 51, 0.12);
-  --panel-shadow: 0 8px 26px rgba(79, 95, 116, 0.13);
+  --panel-shadow: 4px 4px 4px rgba(79, 95, 116, 0.13);
   --popup-shadow: 0 18px 44px rgba(55, 70, 90, 0.18), 0 0 0 1px rgba(19, 32, 51, 0.08);
   --modal-overlay: rgba(31, 42, 56, 0.28);
   --subtle-surface: rgba(19, 32, 51, 0.035);
