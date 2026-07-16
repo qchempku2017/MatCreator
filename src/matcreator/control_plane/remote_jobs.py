@@ -319,6 +319,23 @@ class RemoteJobStore:
             events.append(event)
         return events
 
+    def record_user_control(self, job_id: str, action: str) -> None:
+        """Record a user-requested provider control without changing job state."""
+        if action not in {"pause", "terminate"}:
+            raise ValueError(f"Unsupported remote job user control: {action}")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT 1 FROM remote_jobs WHERE job_id = ?", (job_id,)).fetchone()
+            if row is None:
+                raise KeyError(f"Remote job '{job_id}' was not found")
+            self._append_event(
+                connection,
+                job_id,
+                "user_control",
+                {"action": action, "source": "ui"},
+                time.time(),
+            )
+
     @staticmethod
     def _append_event(
         connection: sqlite3.Connection,

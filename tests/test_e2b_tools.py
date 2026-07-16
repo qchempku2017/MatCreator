@@ -33,6 +33,9 @@ class _FakeService:
             "updated_at": 1,
         }
 
+    def list_events(self, job_id: str):
+        return [{"event_type": "user_control", "payload": {"action": "terminate", "source": "ui"}}]
+
     def pause_e2b(self, job_id: str):
         return {"job_id": job_id, "status": "paused", "external_id": "sandbox-123"}
 
@@ -96,6 +99,15 @@ def test_e2b_tools_reject_jobs_from_another_session(monkeypatch) -> None:
         "status": "error",
         "message": "E2B job was not found in this session.",
     }
+
+
+def test_e2b_status_exposes_user_sandbox_control(monkeypatch) -> None:
+    service = _FakeService()
+    monkeypatch.setattr(e2b_tools, "_service", lambda: service)
+
+    status = e2b_tools.get_e2b_job_status("job-123", _context())
+
+    assert status["user_control"] == {"action": "terminate", "source": "ui"}
 
 
 def test_e2b_command_and_workspace_upload_are_scoped_to_owned_job(tmp_path, monkeypatch) -> None:

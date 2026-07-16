@@ -2268,19 +2268,17 @@ async def pause_session_remote_job(
     job_id: str,
     user_id: str = Query(..., description="Current signed-in user"),
 ) -> JSONResponse:
-    """Pause one E2B sandbox and interrupt its linked execution step."""
+    """Pause one E2B sandbox and notify its linked executor without stopping it."""
     job = _get_owned_remote_job(session_id, job_id, user_id)
     try:
         paused = await asyncio.to_thread(_remote_job_service_for_owner(user_id).pause_e2b, job_id)
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    if job["step_number"] is not None:
-        await asyncio.to_thread(
-            request_step_cancellation,
-            session_id,
-            job["step_number"],
-            "remote_sandbox_paused",
-        )
+    await asyncio.to_thread(
+        _remote_job_store_for_owner(user_id).record_user_control,
+        job_id,
+        "pause",
+    )
     return JSONResponse(paused)
 
 
@@ -2290,19 +2288,17 @@ async def terminate_session_remote_job(
     job_id: str,
     user_id: str = Query(..., description="Current signed-in user"),
 ) -> JSONResponse:
-    """Terminate one E2B sandbox and interrupt its linked execution step."""
+    """Terminate one E2B sandbox and notify its linked executor without stopping it."""
     job = _get_owned_remote_job(session_id, job_id, user_id)
     try:
         terminated = await asyncio.to_thread(_remote_job_service_for_owner(user_id).terminate_e2b, job_id)
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    if job["step_number"] is not None:
-        await asyncio.to_thread(
-            request_step_cancellation,
-            session_id,
-            job["step_number"],
-            "remote_sandbox_terminated",
-        )
+    await asyncio.to_thread(
+        _remote_job_store_for_owner(user_id).record_user_control,
+        job_id,
+        "terminate",
+    )
     return JSONResponse(terminated)
 
 

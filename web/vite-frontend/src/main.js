@@ -47,6 +47,7 @@ const state = {
   sessionSummaries: {},   // { sessionId: "summary text" }
   summaryGeneratedFor: new Set(),  // sessionIds that have triggered summary generation
   remoteJobs: [],
+  remoteJobsExpanded: false,
 };
 
 // ---------------------------------------------------------------------------
@@ -104,6 +105,8 @@ const workspaceCli = document.getElementById("workspace-cli");
 const workspaceTerminalEl = document.getElementById("workspace-terminal");
 const remoteJobListEl = document.getElementById("remote-job-list");
 const refreshRemoteJobsBtn = document.getElementById("refresh-remote-jobs");
+const remoteJobsToggleBtn = document.getElementById("remote-jobs-toggle");
+const remoteJobsPane = document.getElementById("remote-jobs-pane");
 let knowledgeReviewPoll = null;
 let remoteJobsPoll = null;
 let workspaceTerminal = null;
@@ -815,8 +818,8 @@ function renderRemoteJobs() {
   for (const job of state.remoteJobs) {
     const item = document.createElement("li");
     const providerStatus = job.snapshot?.provider_status;
-    const displayStatus = providerStatus === "reachable" ? "reachable" : job.status;
-    item.className = `remote-job status-${displayStatus}`;
+    const lifecycle = remoteJobLifecycle(job.status);
+    item.className = `remote-job status-${lifecycle.key}`;
     const header = document.createElement("div");
     header.className = "remote-job-header";
     const provider = document.createElement("span");
@@ -824,12 +827,18 @@ function renderRemoteJobs() {
     provider.textContent = job.provider || "remote";
     const status = document.createElement("span");
     status.className = "remote-job-status";
-    status.textContent = displayStatus;
+    status.textContent = lifecycle.label;
     header.append(provider, status, createRemoteJobActions(job));
     const identifier = document.createElement("div");
     identifier.className = "remote-job-id";
     identifier.textContent = job.external_id || job.job_id;
     item.append(header, identifier);
+    if (providerStatus) {
+      const providerDetail = document.createElement("div");
+      providerDetail.className = "remote-job-provider-detail";
+      providerDetail.textContent = `Sandbox: ${providerStatus}`;
+      item.appendChild(providerDetail);
+    }
     if (job.error) {
       const error = document.createElement("div");
       error.className = "remote-job-error";
@@ -838,6 +847,37 @@ function renderRemoteJobs() {
     }
     remoteJobListEl.appendChild(item);
   }
+}
+
+function remoteJobLifecycle(status) {
+  const normalized = String(status || "unknown").toLowerCase();
+  const labels = {
+    created: "Created",
+    submitting: "Submitting",
+    queued: "Queued",
+    running: "Running",
+    pause_requested: "Pausing",
+    paused: "Paused",
+    resume_requested: "Resuming",
+    resuming: "Resuming",
+    succeeded: "Completed",
+    collecting: "Collecting results",
+    collected: "Completed",
+    terminate_requested: "Terminating",
+    terminated: "Terminated",
+    failed: "Failed",
+    cancelled: "Cancelled",
+    lost: "Lost",
+  };
+  return { key: normalized, label: labels[normalized] || "Unknown" };
+}
+
+function setRemoteJobsExpanded(expanded) {
+  state.remoteJobsExpanded = Boolean(expanded);
+  remoteJobListEl?.classList.toggle("hidden", !state.remoteJobsExpanded);
+  remoteJobsToggleBtn?.setAttribute("aria-expanded", String(state.remoteJobsExpanded));
+  remoteJobsToggleBtn?.classList.toggle("is-expanded", state.remoteJobsExpanded);
+  remoteJobsPane?.classList.toggle("is-expanded", state.remoteJobsExpanded);
 }
 
 function createRemoteJobActions(job) {
@@ -879,6 +919,7 @@ async function controlRemoteJob(job, action, button) {
 }
 
 refreshRemoteJobsBtn?.addEventListener("click", () => void loadRemoteJobs());
+remoteJobsToggleBtn?.addEventListener("click", () => setRemoteJobsExpanded(!state.remoteJobsExpanded));
 
 // ---------------------------------------------------------------------------
 // Confirm dialog & session delete

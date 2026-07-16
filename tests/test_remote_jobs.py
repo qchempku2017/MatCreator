@@ -94,3 +94,25 @@ def test_remote_job_records_observations_without_status_change(tmp_path) -> None
     assert observed["snapshot"] == {"provider_status": "reachable"}
     assert observed["state_revision"] == 3
     assert store.list_events(job["job_id"])[-1]["event_type"] == "observed"
+
+
+def test_remote_job_records_user_control_without_changing_provider_status(tmp_path) -> None:
+    store = RemoteJobStore(tmp_path / "remote-jobs.db")
+    job = store.create_job(
+        owner_id="alice",
+        session_id="session-1",
+        provider="e2b",
+        idempotency_key="session-1:node-1:attempt-1",
+    )
+    submitting = store.transition_job(job["job_id"], "submitting")
+    running = store.transition_job(
+        job["job_id"], "running", expected_revision=submitting["state_revision"]
+    )
+
+    store.record_user_control(running["job_id"], "pause")
+
+    assert store.get_job(running["job_id"])["status"] == "running"
+    assert store.list_events(running["job_id"])[-1]["payload"] == {
+        "action": "pause",
+        "source": "ui",
+    }

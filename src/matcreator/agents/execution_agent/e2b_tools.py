@@ -94,10 +94,19 @@ def submit_e2b_sandbox(
 
 def get_e2b_job_status(job_id: str, tool_context: ToolContext) -> dict[str, Any]:
     """Read one tracked E2B job owned by the current session."""
-    job = _service().store.get_job(job_id)
+    service = _service()
+    job = service.store.get_job(job_id)
     if job is None or job["owner_id"] != _owner_id(tool_context) or job["session_id"] != tool_context.state.get("session_id"):
         return {"status": "error", "message": "E2B job was not found in this session."}
-    return {key: job[key] for key in ("job_id", "status", "external_id", "snapshot", "error", "updated_at")}
+    result = {key: job[key] for key in ("job_id", "status", "external_id", "snapshot", "error", "updated_at")}
+    controls = [
+        event["payload"]
+        for event in service.store.list_events(job_id)
+        if event["event_type"] == "user_control"
+    ]
+    if controls:
+        result["user_control"] = controls[-1]
+    return result
 
 
 def pause_e2b_sandbox(job_id: str, tool_context: ToolContext) -> dict[str, Any]:
@@ -141,7 +150,11 @@ def run_e2b_command(
     try:
         return _service().run_e2b_command(job_id, command, user=user)
     except Exception as exc:
-        return {"status": "error", "message": f"E2B command failed: {exc}"}
+        current = get_e2b_job_status(job_id, tool_context)
+        result = {"status": "error", "message": f"E2B command failed: {exc}"}
+        if current.get("user_control"):
+            result["user_control"] = current["user_control"]
+        return result
 
 
 def upload_e2b_input(

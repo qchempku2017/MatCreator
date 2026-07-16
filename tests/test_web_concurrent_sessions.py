@@ -92,6 +92,32 @@ def test_remote_job_polling_is_scoped_to_the_active_session() -> None:
     assert "remote-jobs/${encodeURIComponent(job.job_id)}/${action}" in content
 
 
+def test_remote_jobs_are_collapsed_and_keep_lifecycle_status_visible() -> None:
+    content = _main_js()
+    index = INDEX_HTML.read_text(encoding="utf-8")
+    styles = (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "style.css").read_text(encoding="utf-8")
+
+    assert 'id="remote-jobs-toggle"' in index
+    assert 'aria-expanded="false"' in index
+    assert 'id="remote-job-list"' in index and 'remote-job-list hidden' in index
+    assert "remoteJobsExpanded: false" in content
+    assert "remoteJobsPane?.classList.toggle(\"is-expanded\", state.remoteJobsExpanded);" in content
+    assert "function remoteJobLifecycle(status)" in content
+    assert 'succeeded: "Completed"' in content
+    assert 'collected: "Completed"' in content
+    assert "Sandbox: ${providerStatus}" in content
+    assert ".remote-jobs-pane:not(.is-expanded) .remote-jobs-toggle" in styles
+    assert "font-size: 0;" not in styles
+
+
+def test_remote_job_controls_do_not_cancel_the_linked_step_executor() -> None:
+    content = (Path(__file__).parents[1] / "web" / "main.py").read_text(encoding="utf-8")
+    controls = content[content.index("async def pause_session_remote_job("):content.index("@app.post(\"/api/sessions/{session_id}/remote-jobs/{job_id}/refresh\")")]
+
+    assert "record_user_control" in controls
+    assert "request_step_cancellation" not in controls
+
+
 def test_session_switch_parallelizes_independent_requests() -> None:
     content = _main_js()
     switch_session = content[

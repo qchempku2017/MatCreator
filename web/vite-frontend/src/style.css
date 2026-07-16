@@ -2154,10 +2154,42 @@ details.panel-block:not([open]) > summary.block-header::after { transform: rotat
   min-height: 88px;
   overflow-y: auto;
 }
+.remote-jobs-pane:not(.is-expanded) {
+  align-self: flex-start;
+  border-top: 0;
+  flex: 0 0 auto;
+  min-height: 0;
+  overflow: visible;
+  padding-top: 0;
+}
 .remote-jobs-pane .ghost {
   font-size: 11px;
   padding: 3px 8px;
 }
+.remote-jobs-toggle {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  font-weight: inherit;
+  gap: 6px;
+  padding: 0;
+}
+.remote-jobs-pane:not(.is-expanded) .remote-jobs-toggle {
+  color: var(--muted);
+  height: 18px;
+}
+.remote-jobs-pane:not(.is-expanded) .remote-jobs-caret {
+  font-size: 11px;
+}
+.remote-jobs-pane:not(.is-expanded) .ghost {
+  display: none;
+}
+.remote-jobs-caret { color: var(--muted); font-size: 10px; transition: transform 0.15s ease; }
+.remote-jobs-toggle.is-expanded .remote-jobs-caret { transform: rotate(90deg); }
 .remote-job-list {
   list-style: none;
   display: flex;
@@ -2179,6 +2211,8 @@ details.panel-block:not([open]) > summary.block-header::after { transform: rotat
 .remote-job.status-running,
 .remote-job.status-reachable { border-left-color: var(--accent); }
 .remote-job.status-paused { border-left-color: #fbbf24; }
+.remote-job.status-succeeded,
+.remote-job.status-collected { border-left-color: #4ade80; }
 .remote-job.status-terminated,
 .remote-job.status-failed,
 .remote-job.status-lost { border-left-color: #f87171; }
@@ -2186,6 +2220,7 @@ details.panel-block:not([open]) > summary.block-header::after { transform: rotat
 .remote-job-provider { font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--accent); }
 .remote-job-status { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .remote-job-id { margin-top: 3px; font: 10px var(--mono); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.remote-job-provider-detail { margin-top: 3px; color: var(--muted); font-size: 10px; }
 .remote-job-error { margin-top: 4px; color: #f87171; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .remote-job-actions { display: flex; gap: 4px; margin-left: auto; }
 .remote-job-action {

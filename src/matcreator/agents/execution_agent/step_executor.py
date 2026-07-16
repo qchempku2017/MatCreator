@@ -134,6 +134,13 @@ When `prior_context` mentions a previously submitted remote job (e.g. Bohrium/Sl
 3. **If submission.json exists but outputs are missing**, reuse the same submission file (dpdispatcher is idempotent — it skips completed tasks). Do NOT regenerate submission.json.
 4. **Never resubmit a job that already completed** — this wastes GPU time and creates duplicate training runs.
 
+## User controls for E2B sandboxes
+`get_e2b_job_status` may return `user_control` when the user paused or terminated
+the sandbox from the UI. This does not cancel your executor. Treat it as the
+user's explicit instruction: do not retry the interrupted sandbox command or
+submit a replacement sandbox. Report the pause or termination accurately with
+`submit_step_result(status="needs_replanning", replan_reason=...)`.
+
 ## MANDATORY: Always call submit_step_result
 You MUST call `submit_step_result` before finishing. If you exit without calling it, the step will be marked as `needs_replanning` after timeout. Never end a step with just a text response — always use `submit_step_result` to report your outcome.
 """
