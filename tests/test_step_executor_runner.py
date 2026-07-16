@@ -15,6 +15,20 @@ from matcreator.agents.execution_agent.step_executor_runner import (
 from matcreator.agents.session_log import SESSION_ARTIFACTS_KEY
 
 
+def test_step_executor_registers_tracked_e2b_tools() -> None:
+    agent = build_step_executor_agent(LLMCard(name="test", model="test-model"))
+    tool_names = {tool.name for tool in agent.tools if hasattr(tool, "name")}
+
+    assert {
+        "submit_e2b_sandbox",
+        "get_e2b_job_status",
+        "run_e2b_command",
+        "upload_e2b_input",
+        "pause_e2b_sandbox",
+        "terminate_e2b_sandbox",
+    } <= tool_names
+
+
 class _FakeState:
     def __init__(self, data):
         self._data = data

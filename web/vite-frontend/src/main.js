@@ -46,6 +46,7 @@ const state = {
   customWorkdir: "",
   sessionSummaries: {},   // { sessionId: "summary text" }
   summaryGeneratedFor: new Set(),  // sessionIds that have triggered summary generation
+  remoteJobs: [],
 };
 
 // ---------------------------------------------------------------------------
@@ -101,7 +102,10 @@ const knowledgeReviewText = document.getElementById("knowledge-review-text");
 const knowledgeReviewSpinner = document.getElementById("knowledge-review-spinner");
 const workspaceCli = document.getElementById("workspace-cli");
 const workspaceTerminalEl = document.getElementById("workspace-terminal");
+const remoteJobListEl = document.getElementById("remote-job-list");
+const refreshRemoteJobsBtn = document.getElementById("refresh-remote-jobs");
 let knowledgeReviewPoll = null;
+let remoteJobsPoll = null;
 let workspaceTerminal = null;
 let workspaceTerminalFit = null;
 let workspaceTerminalSocket = null;
@@ -744,6 +748,10 @@ function renderSessionList(sessions) {
 
 function sessionDisplayStatus(session, owner) {
   if (state.activeRequests.get(sessionRequestKey(session.id, owner))) return "running";
+  if (session.id === state.sessionId && owner === state.activeSessionUserId) {
+    const statuses = state.remoteJobs.map((job) => job.status);
+    if (statuses.includes("running") || statuses.includes("queued")) return "running";
+  }
   const status = String(session.status || session.phase || "").toLowerCase();
   return ["running", "idle"].includes(status) ? status : "idle";
 }
@@ -762,15 +770,115 @@ async function switchSession(sessionId, owner = state.userId) {
   agentGraph.reset();
   planGraph.reset();
   hidePlanGraph();
+  startRemoteJobsPolling(sessionId, owner);
   const [activeRun] = await Promise.all([
     discoverManagedRun(sessionId, owner),
     loadSession(sessionId, owner),
+    loadRemoteJobs(sessionId, owner),
   ]);
   if (activeRun) startManagedRunReconnect(activeRun, sessionId, owner);
   void loadSessions();
   agentGraph.startPolling(sessionId);
   planGraph.startPolling(sessionId);
 }
+
+function remoteJobsUrl(sessionId, owner) {
+  return `/api/sessions/${encodeURIComponent(sessionId)}/remote-jobs?user_id=${encodeURIComponent(owner)}`;
+}
+
+function startRemoteJobsPolling(sessionId, owner) {
+  if (remoteJobsPoll) clearInterval(remoteJobsPoll);
+  remoteJobsPoll = setInterval(() => void loadRemoteJobs(sessionId, owner), 15000);
+}
+
+async function loadRemoteJobs(sessionId = state.sessionId, owner = state.activeSessionUserId || state.userId) {
+  if (!sessionId || !owner) return;
+  try {
+    const response = await fetch(remoteJobsUrl(sessionId, owner));
+    if (!response.ok) return;
+    const data = await response.json();
+    if (sessionId !== state.sessionId || owner !== state.activeSessionUserId) return;
+    state.remoteJobs = Array.isArray(data.jobs) ? data.jobs : [];
+    renderRemoteJobs();
+  } catch (_) {
+    // The control plane may be restarting; retain the last visible snapshot.
+  }
+}
+
+function renderRemoteJobs() {
+  if (!remoteJobListEl) return;
+  remoteJobListEl.innerHTML = "";
+  if (!state.remoteJobs.length) {
+    remoteJobListEl.innerHTML = '<li class="empty">No remote jobs in this session</li>';
+    return;
+  }
+  for (const job of state.remoteJobs) {
+    const item = document.createElement("li");
+    const providerStatus = job.snapshot?.provider_status;
+    const displayStatus = providerStatus === "reachable" ? "reachable" : job.status;
+    item.className = `remote-job status-${displayStatus}`;
+    const header = document.createElement("div");
+    header.className = "remote-job-header";
+    const provider = document.createElement("span");
+    provider.className = "remote-job-provider";
+    provider.textContent = job.provider || "remote";
+    const status = document.createElement("span");
+    status.className = "remote-job-status";
+    status.textContent = displayStatus;
+    header.append(provider, status, createRemoteJobActions(job));
+    const identifier = document.createElement("div");
+    identifier.className = "remote-job-id";
+    identifier.textContent = job.external_id || job.job_id;
+    item.append(header, identifier);
+    if (job.error) {
+      const error = document.createElement("div");
+      error.className = "remote-job-error";
+      error.textContent = job.error;
+      item.appendChild(error);
+    }
+    remoteJobListEl.appendChild(item);
+  }
+}
+
+function createRemoteJobActions(job) {
+  const actions = document.createElement("div");
+  actions.className = "remote-job-actions";
+  const active = ["queued", "running", "submitting", "resuming"].includes(job.status);
+  const refresh = document.createElement("button");
+  refresh.className = "remote-job-action";
+  refresh.textContent = "↺";
+  refresh.title = "Refresh sandbox status";
+  refresh.addEventListener("click", () => void controlRemoteJob(job, "refresh", refresh));
+  const pause = document.createElement("button");
+  pause.className = "remote-job-action";
+  pause.textContent = "Ⅱ";
+  pause.title = "Pause sandbox";
+  pause.disabled = !active;
+  pause.addEventListener("click", () => void controlRemoteJob(job, "pause", pause));
+  const terminate = document.createElement("button");
+  terminate.className = "remote-job-action terminate";
+  terminate.textContent = "■";
+  terminate.title = "Terminate sandbox";
+  terminate.disabled = !active && job.status !== "paused";
+  terminate.addEventListener("click", () => void controlRemoteJob(job, "terminate", terminate));
+  actions.append(refresh, pause, terminate);
+  return actions;
+}
+
+async function controlRemoteJob(job, action, button) {
+  const owner = state.activeSessionUserId || state.userId;
+  if (!owner || !job?.job_id) return;
+  button.disabled = true;
+  try {
+    const url = `/api/sessions/${encodeURIComponent(state.sessionId)}/remote-jobs/${encodeURIComponent(job.job_id)}/${action}?user_id=${encodeURIComponent(owner)}`;
+    const response = await fetch(url, { method: "POST" });
+    if (response.ok) await loadRemoteJobs(state.sessionId, owner);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+refreshRemoteJobsBtn?.addEventListener("click", () => void loadRemoteJobs());
 
 // ---------------------------------------------------------------------------
 // Confirm dialog & session delete
@@ -2243,7 +2351,8 @@ async function loadSession(sessionId, owner = state.activeSessionUserId || state
 function stopCurrentMessage() {
   const request = activeSessionRequest();
   if (!request) return;
-  fetch(`/api/sessions/${state.sessionId}/cancel`, { method: "POST" }).catch(() => {});
+  const query = new URLSearchParams({ user_id: request.owner || state.userId });
+  fetch(`/api/sessions/${state.sessionId}/cancel?${query}`, { method: "POST" }).catch(() => {});
   request.controller.abort();
   pollCancellationConfirmed(state.sessionId);
 }

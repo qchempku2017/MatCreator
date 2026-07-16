@@ -586,6 +586,7 @@ async def run_step_executor(
         if not k.startswith("_adk") and not is_session_log_state_key(k)
     }
     state_dict["workspace_dir"] = str(step_workspace)
+    state_dict["step_number"] = step_number
     if output_dir is not None:
         state_dict["output_dir"] = str(output_dir)
         state_dict["session_output_dir"] = str(output_dir)

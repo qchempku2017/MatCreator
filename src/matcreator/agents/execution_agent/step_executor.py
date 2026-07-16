@@ -18,6 +18,14 @@ from ...knowledge.query import get_related_skills, search_skill_context, search_
 from ...tools.remoteagent_tool import load_remote_a2a_agents
 from ...tools.util_tools import show_artifact, show_plot, show_structure
 from ...tools.workspace_tools import get_user_skills_root, run_bash, run_python
+from .e2b_tools import (
+    get_e2b_job_status,
+    pause_e2b_sandbox,
+    run_e2b_command,
+    submit_e2b_sandbox,
+    terminate_e2b_sandbox,
+    upload_e2b_input,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -238,6 +246,12 @@ def build_step_executor_agent(llm_card: LLMCard) -> LlmAgent:
             FunctionTool(get_user_skills_root),
             FunctionTool(run_python),
             FunctionTool(run_bash),
+            FunctionTool(submit_e2b_sandbox),
+            FunctionTool(get_e2b_job_status),
+            FunctionTool(run_e2b_command),
+            FunctionTool(upload_e2b_input),
+            FunctionTool(pause_e2b_sandbox),
+            FunctionTool(terminate_e2b_sandbox),
             ALL_SKILLS_TOOLSET,
             FunctionTool(show_plot),
             FunctionTool(show_structure),

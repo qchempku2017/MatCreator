@@ -1,0 +1,38 @@
+---
+name: e2b
+description: Submit and manage tracked remote E2B sandboxes for session-scoped computational work.
+metadata:
+  tools:
+    - submit_e2b_sandbox
+    - get_e2b_job_status
+    - pause_e2b_sandbox
+    - terminate_e2b_sandbox
+  tags: [e2b, remote-job, sandbox, cloud-computing]
+---
+
+# E2B Remote Sandbox Management
+
+Use the E2B tools for remote sandbox work. They persist the sandbox ID against
+the current session and graph node, enabling the FastAPI frontend to monitor and
+control the sandbox even after the agent or browser reconnects.
+
+## Submission
+
+1. Call `submit_e2b_sandbox` once for the current step. It is idempotent for
+   the current session, node, and template.
+2. Use `upload_e2b_input` for workspace files, then use `run_e2b_command` for
+   the sandbox command. Both require the returned `job_id`.
+3. Record the returned `job_id` in the step result and use it for status and
+   sandbox control.
+4. Do not invoke the E2B SDK directly, use `curl`, or expose API credentials in
+   commands, files, or responses.
+
+## Controls
+
+- `get_e2b_job_status` reads the persisted provider snapshot.
+- `pause_e2b_sandbox` preserves the sandbox and pauses remote execution.
+- `terminate_e2b_sandbox` irreversibly kills the sandbox.
+
+The frontend can issue the same controls. Before continuing dependent work after
+a pause or termination, return a `needs_replanning` step result with the job ID
+and the observed state.
