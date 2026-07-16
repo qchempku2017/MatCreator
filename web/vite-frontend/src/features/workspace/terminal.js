@@ -6,6 +6,9 @@ export function createWorkspaceTerminalController({ state, container, panel, tog
   let terminal = null;
   let fitAddon = null;
   let socket = null;
+  let pointerDown = false;
+  let selectionReleasedAt = 0;
+  let ctrlCKeyAt = 0;
 
   function socketUrl() {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -27,6 +30,48 @@ export function createWorkspaceTerminalController({ state, container, panel, tog
     }
   }
 
+  function copySelection(event) {
+    if (!terminal?.hasSelection?.()) return;
+    const selectedText = terminal.getSelection();
+    if (!selectedText) return;
+    event.preventDefault();
+    event.clipboardData?.setData("text/plain", selectedText);
+    navigator.clipboard?.writeText(selectedText).catch(() => {});
+  }
+
+  function writeSelectionToClipboard() {
+    if (!terminal?.hasSelection?.()) return false;
+    const selectedText = terminal.getSelection();
+    if (!selectedText) return false;
+    navigator.clipboard?.writeText(selectedText).catch(() => {});
+    return true;
+  }
+
+  function handleKeydown(event) {
+    const isCopyKey = (event.ctrlKey || event.metaKey) && event.key?.toLowerCase?.() === "c";
+    if (!isCopyKey) return;
+    ctrlCKeyAt = Date.now();
+    if (!terminal?.hasSelection?.()) return;
+    event.preventDefault();
+    event.stopPropagation();
+    writeSelectionToClipboard();
+  }
+
+  function handlePointerDown() {
+    pointerDown = true;
+  }
+
+  function handlePointerUp() {
+    if (pointerDown && terminal?.hasSelection?.()) selectionReleasedAt = Date.now();
+    pointerDown = false;
+  }
+
+  function shouldSuppressInput(data) {
+    if (data !== "\x03") return false;
+    const now = Date.now();
+    return now - selectionReleasedAt < 500 && now - ctrlCKeyAt >= 500;
+  }
+
   function start() {
     if (!container) return;
     if (socket?.readyState === WebSocket.OPEN) {
@@ -45,6 +90,14 @@ export function createWorkspaceTerminalController({ state, container, panel, tog
     fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
     terminal.open(container);
+    container.removeEventListener("copy", copySelection);
+    container.addEventListener("copy", copySelection);
+    container.removeEventListener("keydown", handleKeydown, true);
+    container.addEventListener("keydown", handleKeydown, true);
+    container.removeEventListener("pointerdown", handlePointerDown);
+    container.addEventListener("pointerdown", handlePointerDown);
+    container.removeEventListener("pointerup", handlePointerUp);
+    container.addEventListener("pointerup", handlePointerUp);
     terminal.write("\r\nStarting workspace terminal...\r\n");
     fitAddon.fit();
     terminal.focus();
@@ -62,6 +115,7 @@ export function createWorkspaceTerminalController({ state, container, panel, tog
     socket.addEventListener("close", () => terminal?.write("\r\n[terminal closed]\r\n"));
     socket.addEventListener("error", () => terminal?.write("\r\n[terminal connection error]\r\n"));
     terminal.onData((data) => {
+      if (shouldSuppressInput(data)) return;
       if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "input", data }));
     });
   }
@@ -72,7 +126,13 @@ export function createWorkspaceTerminalController({ state, container, panel, tog
     terminal?.dispose();
     terminal = null;
     fitAddon = null;
-    if (container) container.innerHTML = "";
+    if (container) {
+      container.removeEventListener("copy", copySelection);
+      container.removeEventListener("keydown", handleKeydown, true);
+      container.removeEventListener("pointerdown", handlePointerDown);
+      container.removeEventListener("pointerup", handlePointerUp);
+      container.innerHTML = "";
+    }
   }
 
   function setOpen(open) {
