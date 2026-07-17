@@ -1300,6 +1300,7 @@ body[data-theme="dark"] .input-container[data-agent-mode="bench"] {
 
 .composer-toolbar {
   min-height: 30px;
+  transform: translateY(2px);
 }
 
 .plan-approval-actions {
@@ -1419,9 +1420,9 @@ body[data-theme="light"] .composer-icon-btn:hover {
 .text-input:focus { outline: none; }
 .send-btn,
 .tool-btn {
-  background: rgba(255,255,255,0.04);
-  border: 1px solid var(--border);
-  color: var(--text);
+  background: var(--subtle-surface);
+  border: 1px solid var(--border-default, var(--border));
+  color: var(--muted);
   width: 44px;
   height: 38px;
   border-radius: 12px;
@@ -1431,14 +1432,21 @@ body[data-theme="light"] .composer-icon-btn:hover {
 .composer-toolbar .send-btn { margin-left: auto; }
 .composer-toolbar .tool-btn,
 .composer-toolbar .send-btn {
-  width: 30px;
-  height: 30px;
-  flex-basis: 30px;
+  width: 32px;
+  height: 32px;
+  flex-basis: 32px;
   border-radius: 8px;
   font-size: 16px;
 }
+.composer-toolbar .send-btn {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg-elevated);
+  font-weight: 700;
+}
 .send-btn:hover,
-.tool-btn:hover { border-color: var(--accent); color: var(--accent); }
+.tool-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-primary-soft, var(--subtle-surface)); }
+.composer-toolbar .send-btn:hover { background: var(--accent-2); border-color: var(--accent-2); color: var(--bg-elevated); }
 .send-btn.is-stopping {
   border-color: #F87171;
   color: #F87171;

@@ -2282,7 +2282,8 @@ if (modeSelector && modeTrigger && modeMenu) {
   updateComposerModeState(state.agentMode);
 
   modeTrigger.addEventListener("click", () => {
-    setMenuOpen(true, { pinned: true });
+    const open = !modeSelector.classList.contains("is-open");
+    setMenuOpen(open, { pinned: open });
   });
   modeSelector.addEventListener("click", (e) => {
     const btn = e.target.closest(".mode-btn");
@@ -2296,7 +2297,8 @@ if (modeSelector && modeTrigger && modeMenu) {
       modeTrigger.focus();
     } else if ((e.key === "Enter" || e.key === " ") && document.activeElement === modeTrigger) {
       e.preventDefault();
-      setMenuOpen(true, { pinned: true, focusSelected: true });
+      const open = !modeSelector.classList.contains("is-open");
+      setMenuOpen(open, { pinned: open, focusSelected: open });
     } else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) {
       e.preventDefault();
       const nextIndex = e.key === "Home" ? 0 : e.key === "End" ? modeButtons.length - 1 : (currentIndex < 0 ? modeButtons.findIndex((btn) => btn.dataset.mode === state.agentMode) : currentIndex + (e.key === "ArrowDown" ? 1 : -1) + modeButtons.length) % modeButtons.length;
