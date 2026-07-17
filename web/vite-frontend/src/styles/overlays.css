@@ -581,6 +581,7 @@ details summary:hover { color: var(--text); }
 .composer-controls .mode-selector {
   flex: 0 1 270px;
   min-width: 210px;
+  box-shadow: inset 1px 1px 2px rgba(0, 0, 0, 0.18);
 }
 .mode-btn {
   flex: 1;
@@ -598,7 +599,7 @@ details summary:hover { color: var(--text); }
 .mode-btn-active {
   background: var(--panel);
   color: var(--text);
-  box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+  box-shadow: 1px 1px 3px rgba(0,0,0,0.4);
 }
 .mode-btn[data-mode="flash"].mode-btn-active { color: #7dd3fc; }
 .mode-btn[data-mode="bench"].mode-btn-active  { color: #f59e0b; }
@@ -708,12 +709,6 @@ details summary:hover { color: var(--text); }
 /* ── Responsive ─────────────────────────────────────────── */
 @media (max-width: 900px) {
   .topbar { flex-wrap: wrap; gap: 12px; }
-  .knowledge-review-banner {
-    order: 3;
-    width: 100%;
-    max-width: none;
-    justify-content: center;
-  }
   .session-chips { flex-wrap: wrap; justify-content: flex-end; }
   .app-grid { flex-direction: column; }
   .graph-column, .side-panel, .file-explorer-col {
@@ -872,4 +867,3 @@ body[data-theme="light"] .panel-resizer.resizing::before {
   overflow-y: auto;
   padding-right: 4px;
 }
-

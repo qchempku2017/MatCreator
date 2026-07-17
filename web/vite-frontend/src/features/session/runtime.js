@@ -13,6 +13,7 @@ export function createSessionRuntime({
   displayMessageFromStoredUserText,
   addMessage,
   addAgentTimelineMessage,
+  addPlanApprovalActions,
   renderSessionBanner,
   renderSessionFilesTree,
   refreshSessionFiles,
@@ -102,7 +103,24 @@ export function createSessionRuntime({
     return timeline;
   }
 
-  function renderSessionTimeline(events, stepNodes) {
+  function latestTurnHasValidatedPlan(events) {
+    const latestUserIndex = events.reduce((index, event, current) => event?.author === "user" ? current : index, -1);
+    if (latestUserIndex < 0) return false;
+    return events.slice(latestUserIndex + 1).some((event) => (event.content?.parts || []).some((part) => {
+      const response = getFunctionResponse(part);
+      return response?.name === "validate_graph" && response.response?.status === "ok";
+    }));
+  }
+
+  function shouldShowPlanApprovalActions(sessionData, events) {
+    // This is deliberately UI-derived state. A successful validate_graph in
+    // the latest user turn is the UI event that a plan was presented; no new
+    // orchestration state is written for this feature.
+    const state = sessionData?.state || {};
+    return (state.agent_mode || "normal") === "normal" && latestTurnHasValidatedPlan(events);
+  }
+
+  function renderSessionTimeline(events, stepNodes, awaitingPlanApproval = false) {
     chatArea.innerHTML = "";
     stepExecutionFeed.reset();
     stepExecutionFeed.setHierarchy(stepNodes || []);
@@ -114,6 +132,7 @@ export function createSessionRuntime({
     const pairedResponseIds = new Set();
     let shownPlotPaths = new Set();
     let messageIndex = 0;
+    let lastAgentTimeline = null;
 
     for (const event of sortedEvents) {
       if (event.author === "user") {
@@ -123,9 +142,10 @@ export function createSessionRuntime({
         continue;
       }
       const timeline = attachStepNodes(eventToTimelineParts(event, responsesById, pairedResponseIds), pendingStepNodes);
-      if (timeline.length) addAgentTimelineMessage(timeline, shownPlotPaths, messageIndex++);
+      if (timeline.length) lastAgentTimeline = addAgentTimelineMessage(timeline, shownPlotPaths, messageIndex++);
     }
     pendingStepNodes.forEach((node) => stepExecutionFeed.appendStatic(node));
+    if (awaitingPlanApproval && lastAgentTimeline) addPlanApprovalActions(lastAgentTimeline);
   }
 
   function updateSessionWorkdirDisplay(sessionData) {
@@ -156,7 +176,11 @@ export function createSessionRuntime({
       const summary = sessionData.summary || state.sessionSummaries[sessionId] || "";
       if (render) {
         renderSessionBanner(summary);
-        renderSessionTimeline(events, graphNodes);
+        renderSessionTimeline(
+          events,
+          graphNodes,
+          shouldShowPlanApprovalActions(sessionData, events),
+        );
       }
       state.sessionViewCache.set(viewKey, { sessionData, events, graphNodes, files: [], summary });
       if (state.sessionViewCache.size > 10) state.sessionViewCache.delete(state.sessionViewCache.keys().next().value);

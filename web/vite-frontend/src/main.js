@@ -90,9 +90,19 @@ const modeSelector = document.getElementById("mode-selector");
 const sessionSummaryText = document.getElementById("session-summary-text");
 const chatTab = document.getElementById("tab-chat");
 const filesColToggleBtn = document.getElementById("files-col-toggle");
-const knowledgeReviewBanner = document.getElementById("knowledge-review-banner");
-const knowledgeReviewText = document.getElementById("knowledge-review-text");
-const knowledgeReviewSpinner = document.getElementById("knowledge-review-spinner");
+const knowledgeReviewBanner = document.createElement("button");
+knowledgeReviewBanner.className = "knowledge-review-banner status-idle";
+knowledgeReviewBanner.id = "knowledge-review-banner";
+knowledgeReviewBanner.type = "button";
+knowledgeReviewBanner.setAttribute("aria-live", "polite");
+knowledgeReviewBanner.title = "Click to review memory and graph nodes";
+const knowledgeReviewSpinner = document.createElement("span");
+knowledgeReviewSpinner.className = "knowledge-review-spinner hidden";
+knowledgeReviewSpinner.id = "knowledge-review-spinner";
+const knowledgeReviewText = document.createElement("span");
+knowledgeReviewText.id = "knowledge-review-text";
+knowledgeReviewText.textContent = "Review Know-Do Graph";
+knowledgeReviewBanner.append(knowledgeReviewSpinner, knowledgeReviewText);
 const workspaceCli = document.getElementById("workspace-cli");
 const workspaceTerminalEl = document.getElementById("workspace-terminal");
 let knowledgeReviewPoll = null;
@@ -120,6 +130,7 @@ const skillGraphController = createSkillGraphController({
   centerTabPanels,
   activateCenterTab,
   renderMarkdown,
+  knowledgeReviewBanner,
 });
 
 const { render: renderSessionFilesTree } = createSessionFileTree({
@@ -975,6 +986,68 @@ function addAgentTimelineMessage(timeline, shownPlotPaths = null, msgIndex, cont
   return inner;
 }
 
+function addPlanApprovalActions(timelineContainer) {
+  const agentMessage = timelineContainer?.closest(".agent-message");
+  if (!agentMessage || agentMessage.nextElementSibling?.classList.contains("plan-approval-message")) return;
+  const responseMessage = document.createElement("div");
+  responseMessage.className = "message user-message plan-approval-message";
+  const bubble = document.createElement("div");
+  bubble.className = "message-bubble";
+  const prompt = document.createElement("div");
+  prompt.className = "plan-approval-prompt";
+  prompt.textContent = "How would you like to proceed?";
+  const actions = document.createElement("div");
+  actions.className = "plan-approval-actions";
+  actions.setAttribute("role", "group");
+  actions.setAttribute("aria-label", "Plan actions");
+
+  const disableControls = () => responseMessage.querySelectorAll("button, input").forEach((item) => { item.disabled = true; });
+  [["yes", "Approve", "Approve this plan and start execution"], ["replan", "Replan", "Ask the agent to revise this plan"]]
+    .forEach(([message, label, title]) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "plan-approval-btn";
+      button.textContent = label;
+      button.title = title;
+      button.addEventListener("click", () => {
+        disableControls();
+        messageStreamController.send(message);
+      });
+      actions.appendChild(button);
+    });
+
+  const feedback = document.createElement("div");
+  feedback.className = "plan-feedback";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "plan-feedback-input";
+  input.placeholder = "Other feedback or changes…";
+  input.setAttribute("aria-label", "Other feedback about this plan");
+  const sendFeedback = () => {
+    const message = input.value.trim();
+    if (!message) return;
+    disableControls();
+    messageStreamController.send(message);
+  };
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      sendFeedback();
+    }
+  });
+  const submit = document.createElement("button");
+  submit.type = "button";
+  submit.className = "plan-approval-btn plan-feedback-submit";
+  submit.textContent = "Send";
+  submit.title = "Send feedback about this plan";
+  submit.addEventListener("click", sendFeedback);
+  feedback.append(input, submit);
+  bubble.append(prompt, actions, feedback);
+  responseMessage.appendChild(bubble);
+  agentMessage.after(responseMessage);
+  scrollToBottom();
+}
+
 function formatStepDuration(node) {
   if (!node.start_time) return "—";
   if (!node.end_time) return "running…";
@@ -1073,6 +1146,7 @@ const sessionRuntime = createSessionRuntime({
   displayMessageFromStoredUserText,
   addMessage,
   addAgentTimelineMessage,
+  addPlanApprovalActions,
   renderSessionBanner,
   renderSessionFilesTree,
   refreshSessionFiles,
@@ -1863,9 +1937,6 @@ if (avatarUploadBtn && avatarUploadInput) {
     e.target.value = "";
   });
 }
-
-Array.from(document.querySelectorAll("[data-quick]"))
-  .forEach((btn) => btn.addEventListener("click", () => messageStreamController.send(btn.dataset.quick || "")));
 
 // Agent mode selector
 function updateComposerModeState(mode) {

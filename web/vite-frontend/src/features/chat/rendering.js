@@ -2,10 +2,10 @@ import { marked } from "marked";
 
 const BOX_RE = /[┌┐└┘├┤┬┴┼│━─]/;
 const CJK_RE = /[一-鿿㐀-䶿豈-﫿　-〿＀-￯]/;
-const AGENT_AVATAR_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="rgba(125,211,252,0.9)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-  <rect x="3" y="8" width="18" height="11" rx="2"/><path d="M8 8V6a4 4 0 0 1 8 0v2"/><circle cx="9" cy="14" r="1" fill="rgba(125,211,252,0.9)" stroke="none"/><circle cx="15" cy="14" r="1" fill="rgba(125,211,252,0.9)" stroke="none"/><path d="M7 19v2M17 19v2"/>
+const AGENT_AVATAR_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="rgba(148,163,184,0.9)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="3" y="8" width="18" height="11" rx="2"/><path d="M8 8V6a4 4 0 0 1 8 0v2"/><circle cx="9" cy="14" r="1" fill="rgba(148,163,184,0.9)" stroke="none"/><circle cx="15" cy="14" r="1" fill="rgba(148,163,184,0.9)" stroke="none"/><path d="M7 19v2M17 19v2"/>
 </svg>`;
-const USER_AVATAR_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="rgba(168,85,247,0.9)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+const USER_AVATAR_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="rgba(59,130,246,0.9)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
   <circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/>
 </svg>`;
 
