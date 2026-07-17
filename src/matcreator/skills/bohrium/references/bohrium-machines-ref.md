@@ -61,5 +61,8 @@ Available GPU types:
 - For light-weight jobs such as structure-frames selection and very small-scaled MD, `1 * NVIDIA V100_32g` is usually sufficient.
 - For most machine-learned force field (MLFF) training and inference-related jobs,
    preference order is: `1 * NVIDIA L20_48g` > `1 * NVIDIA V100_32g` > `1 * NVIDIA 4090_24g` > `c6_m64_1 * NVIDIA 3090`.
+- For first-principle jobs, CPU machines should be default. However, to use GPU-acceleration for first-principle jobs,
+   `1 * NVIDIA V100_32g` as it offers the best price-performance ratio at FP64 compute, do not use A100 unless you are
+   sure about your job's scale.
 - [2026/07/15] 4090 and 3090 resources, though cost-effective, are often limited and may require extremely long waiting for now,
    not recommended unless you are sure about your job's scale and can tolerate long waiting time.
