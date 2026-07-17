@@ -340,14 +340,18 @@ export class AgentGraphView {
   }
 
   _resizeSurface() {
-    if (!this._surfaceEl || !this._graphViewport) return;
+    if (!this._surfaceEl || !this._graphViewport) return null;
 
     // Match the canvas to the visible viewport exactly; larger off-screen
     // surfaces make fit() center against hidden space instead of the panel.
     const targetWidth = Math.max(1, Math.round(this._graphViewport.clientWidth || 1));
     const targetHeight = Math.max(1, Math.round(this._graphViewport.clientHeight || 1));
-    this._surfaceEl.style.width = `${targetWidth}px`;
-    this._surfaceEl.style.height = `${targetHeight}px`;
+    const width = `${targetWidth}px`;
+    const height = `${targetHeight}px`;
+    if (this._surfaceEl.style.width === width && this._surfaceEl.style.height === height) return null;
+    this._surfaceEl.style.width = width;
+    this._surfaceEl.style.height = height;
+    return { width, height };
   }
 
   _fitGraph() {
@@ -595,6 +599,14 @@ export class AgentGraphView {
 
   notifyLayoutChanged() {
     if (!this._network) return;
+    const size = this._resizeSurface();
+    if (size) {
+      // vis-network's automatic resize observer can trail a CSS transition by
+      // a frame. Resize its canvas explicitly so it never paints below the
+      // adjacent Remote Jobs pane while the pane is moving.
+      this._network.setSize(size.width, size.height);
+      return;
+    }
     this._network.redraw();
   }
 }
@@ -1069,4 +1081,3 @@ export class StepExecutionFeed {
 // ---------------------------------------------------------------------------
 // Execution Plan Graph (floating popup in chat column)
 // ---------------------------------------------------------------------------
-

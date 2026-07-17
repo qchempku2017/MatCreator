@@ -66,6 +66,7 @@ const themeToggle = document.getElementById("theme-toggle");
 const refreshSessionsBtn = document.getElementById("refresh-sessions");
 const sessionStatusFilter = document.getElementById("session-status-filter");
 const graphViewport = document.getElementById("graph-viewport");
+const graphRail = document.getElementById("graph-column");
 const graphDetail = document.getElementById("graph-detail");
 const centerTabs = document.getElementById("center-tabs");
 const centerTabsScroll = document.getElementById("center-tabs-scroll");
@@ -91,6 +92,8 @@ const logoutBtn = document.getElementById("logout-btn");
 const settingsLogoutBtn = document.getElementById("settings-logout-btn");
 const benchToggle = null; // removed — replaced by mode-selector
 const modeSelector = document.getElementById("mode-selector");
+const modeTrigger = document.getElementById("mode-trigger");
+const modeMenu = document.getElementById("mode-menu");
 const sessionSummaryText = document.getElementById("session-summary-text");
 const chatTab = document.getElementById("tab-chat");
 const filesColToggleBtn = document.getElementById("files-col-toggle");
@@ -114,8 +117,16 @@ const refreshRemoteJobsBtn = document.getElementById("refresh-remote-jobs");
 const remoteJobsToggleBtn = document.getElementById("remote-jobs-toggle");
 const remoteJobsPane = document.getElementById("remote-jobs-pane");
 const remoteJobsDemoBadge = document.getElementById("remote-jobs-demo-badge");
+const remoteJobPopover = document.createElement("div");
+remoteJobPopover.className = "remote-job-detail";
+remoteJobPopover.id = "remote-job-detail-popover";
+remoteJobPopover.setAttribute("role", "dialog");
+remoteJobPopover.setAttribute("aria-label", "Remote job details");
+document.body.appendChild(remoteJobPopover);
 let knowledgeReviewPoll = null;
 let remoteJobsPoll = null;
+let remoteJobPopoverHideTimer = null;
+let visibleRemoteJobCard = null;
 const structureTabs = new Map();
 let structureViewerModulePromise = null;
 let svelteRuntimePromise = null;
@@ -791,6 +802,7 @@ function getDummyRemoteJobs(sessionId, owner) {
 
 function renderRemoteJobs() {
   if (!remoteJobListEl) return;
+  hideRemoteJobPopover();
   remoteJobListEl.innerHTML = "";
   if (!state.remoteJobs.length) {
     remoteJobListEl.innerHTML = '<li class="empty">No remote jobs in this session</li>';
@@ -801,6 +813,8 @@ function renderRemoteJobs() {
     const providerStatus = job.snapshot?.provider_status;
     const lifecycle = remoteJobLifecycle(job.status);
     item.className = `remote-job status-${lifecycle.key}`;
+    item.tabIndex = 0;
+    item.title = "Hover for job details";
     const header = document.createElement("div");
     header.className = "remote-job-header";
     const provider = document.createElement("span");
@@ -814,21 +828,78 @@ function renderRemoteJobs() {
     identifier.className = "remote-job-id";
     identifier.textContent = job.external_id || job.job_id;
     item.append(header, identifier);
-    if (providerStatus) {
-      const providerDetail = document.createElement("div");
-      providerDetail.className = "remote-job-provider-detail";
-      providerDetail.textContent = `Sandbox: ${providerStatus}`;
-      item.appendChild(providerDetail);
-    }
     if (job.error) {
       const error = document.createElement("div");
       error.className = "remote-job-error";
       error.textContent = job.error;
       item.appendChild(error);
     }
+    const showDetails = () => showRemoteJobPopover(item, job, providerStatus);
+    item.addEventListener("mouseenter", showDetails);
+    item.addEventListener("mouseleave", scheduleRemoteJobPopoverHide);
+    item.addEventListener("focusin", showDetails);
+    item.addEventListener("focusout", scheduleRemoteJobPopoverHide);
     remoteJobListEl.appendChild(item);
   }
 }
+
+function showRemoteJobPopover(card, job, providerStatus) {
+  clearTimeout(remoteJobPopoverHideTimer);
+  if (visibleRemoteJobCard && visibleRemoteJobCard !== card) {
+    visibleRemoteJobCard.classList.remove("is-detail-open");
+  }
+  visibleRemoteJobCard = card;
+  card.classList.add("is-detail-open");
+  remoteJobPopover.replaceChildren(createRemoteJobDetail(job, providerStatus));
+  remoteJobPopover.classList.add("is-visible");
+  const rect = card.getBoundingClientRect();
+  const width = Math.min(280, window.innerWidth - 16);
+  const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
+  const top = Math.min(rect.bottom + 8, window.innerHeight - 150);
+  remoteJobPopover.style.left = `${left}px`;
+  remoteJobPopover.style.top = `${Math.max(8, top)}px`;
+}
+
+function scheduleRemoteJobPopoverHide() {
+  clearTimeout(remoteJobPopoverHideTimer);
+  remoteJobPopoverHideTimer = setTimeout(hideRemoteJobPopover, 150);
+}
+
+function hideRemoteJobPopover() {
+  clearTimeout(remoteJobPopoverHideTimer);
+  if (visibleRemoteJobCard) {
+    visibleRemoteJobCard.classList.remove("is-detail-open");
+  }
+  remoteJobPopover.classList.remove("is-visible");
+  visibleRemoteJobCard = null;
+}
+
+function createRemoteJobDetail(job, providerStatus) {
+  const detail = document.createDocumentFragment();
+  const fields = [
+    ["Provider", job.provider || "remote"],
+    ["Status", remoteJobLifecycle(job.status).label],
+    ["Sandbox", job.external_id || "—"],
+    ["Job ID", job.job_id || "—"],
+  ];
+  if (providerStatus) fields.splice(2, 0, ["Provider status", providerStatus]);
+  for (const [label, value] of fields) {
+    const row = document.createElement("div");
+    const key = document.createElement("span");
+    key.textContent = label;
+    const content = document.createElement("code");
+    content.textContent = String(value);
+    row.append(key, content);
+    detail.appendChild(row);
+  }
+  return detail;
+}
+
+remoteJobPopover.addEventListener("mouseenter", () => clearTimeout(remoteJobPopoverHideTimer));
+remoteJobPopover.addEventListener("mouseleave", scheduleRemoteJobPopoverHide);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") hideRemoteJobPopover();
+});
 
 function remoteJobLifecycle(status) {
   const normalized = String(status || "unknown").toLowerCase();
@@ -859,6 +930,7 @@ function setRemoteJobsExpanded(expanded) {
   remoteJobsToggleBtn?.setAttribute("aria-expanded", String(state.remoteJobsExpanded));
   remoteJobsToggleBtn?.classList.toggle("is-expanded", state.remoteJobsExpanded);
   remoteJobsPane?.classList.toggle("is-expanded", state.remoteJobsExpanded);
+  graphRail?.classList.toggle("remote-jobs-expanded", state.remoteJobsExpanded);
 }
 
 function createRemoteJobActions(job) {
@@ -866,22 +938,32 @@ function createRemoteJobActions(job) {
   actions.className = "remote-job-actions";
   const active = ["queued", "running", "submitting", "resuming"].includes(job.status);
   const refresh = document.createElement("button");
-  refresh.className = "remote-job-action";
-  refresh.textContent = "↺";
+  refresh.className = "remote-job-action refresh-button";
+  refresh.innerHTML = '<svg class="refresh-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><path d="M18.5 9A7 7 0 1 0 19 15"></path><path d="M18.5 5v4h-4"></path></svg>';
   refresh.title = "Refresh sandbox status";
-  refresh.addEventListener("click", () => void controlRemoteJob(job, "refresh", refresh));
+  refresh.setAttribute("aria-label", "Refresh sandbox status");
+  refresh.addEventListener("click", (event) => {
+    event.stopPropagation();
+    void controlRemoteJob(job, "refresh", refresh);
+  });
   const pause = document.createElement("button");
   pause.className = "remote-job-action";
   pause.textContent = "Ⅱ";
   pause.title = "Pause sandbox";
   pause.disabled = !active;
-  pause.addEventListener("click", () => void controlRemoteJob(job, "pause", pause));
+  pause.addEventListener("click", (event) => {
+    event.stopPropagation();
+    void controlRemoteJob(job, "pause", pause);
+  });
   const terminate = document.createElement("button");
   terminate.className = "remote-job-action terminate";
   terminate.textContent = "■";
   terminate.title = "Terminate sandbox";
   terminate.disabled = !active && job.status !== "paused";
-  terminate.addEventListener("click", () => void controlRemoteJob(job, "terminate", terminate));
+  terminate.addEventListener("click", (event) => {
+    event.stopPropagation();
+    void controlRemoteJob(job, "terminate", terminate);
+  });
   actions.append(refresh, pause, terminate);
   return actions;
 }
@@ -2152,22 +2234,86 @@ function updateComposerModeState(mode) {
   inputContainer.dataset.agentMode = mode || "normal";
 }
 
-if (modeSelector) {
-  modeSelector.querySelectorAll(".mode-btn").forEach((btn) => {
-    btn.classList.toggle("mode-btn-active", btn.dataset.mode === state.agentMode);
-  });
-  updateComposerModeState(state.agentMode);
-  modeSelector.addEventListener("click", (e) => {
-    const btn = e.target.closest(".mode-btn");
-    if (!btn) return;
-    const mode = btn.dataset.mode;
+if (modeSelector && modeTrigger && modeMenu) {
+  const modeDetails = {
+    flash: { label: "Flash", icon: '<svg viewBox="0 0 24 24"><path d="m13 2-9 12h7l-1 8 10-13h-7z"/></svg>' },
+    normal: { label: "Standard", icon: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2"/></svg>' },
+    bench: { label: "Bench", icon: '<svg viewBox="0 0 24 24"><path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-9V3M8 16h8"/></svg>' },
+  };
+  const modeButtons = [...modeSelector.querySelectorAll(".mode-btn")];
+  const modeLabel = modeTrigger.querySelector(".mode-trigger-label");
+  const modeIcon = modeTrigger.querySelector(".mode-trigger-icon");
+  let closeTimer = null;
+  let menuPinned = false;
+
+  function setMenuOpen(open, { pinned = menuPinned, focusSelected = false } = {}) {
+    window.clearTimeout(closeTimer);
+    menuPinned = open && pinned;
+    modeSelector.classList.toggle("is-open", open);
+    modeTrigger.setAttribute("aria-expanded", String(open));
+    if (open && focusSelected) {
+      modeButtons.find((btn) => btn.dataset.mode === state.agentMode)?.focus();
+    }
+  }
+
+  function renderMode(mode) {
+    const detail = modeDetails[mode] || modeDetails.normal;
+    modeLabel.textContent = detail.label;
+    modeIcon.innerHTML = detail.icon;
+    modeSelector.dataset.selectedMode = mode;
+    modeButtons.forEach((btn) => {
+      const selected = btn.dataset.mode === mode;
+      btn.classList.toggle("mode-btn-active", selected);
+      btn.setAttribute("aria-checked", String(selected));
+    });
+  }
+
+  function selectMode(mode) {
     state.agentMode = mode;
     localStorage.setItem(AGENT_MODE_KEY, mode);
-    modeSelector.querySelectorAll(".mode-btn").forEach((b) =>
-      b.classList.toggle("mode-btn-active", b.dataset.mode === mode)
-    );
+    renderMode(mode);
     updateComposerModeState(mode);
     patchSessionAgentMode(mode);
+    setMenuOpen(false, { pinned: false });
+    modeTrigger.focus();
+  }
+
+  renderMode(state.agentMode);
+  updateComposerModeState(state.agentMode);
+
+  modeTrigger.addEventListener("click", () => {
+    setMenuOpen(true, { pinned: true });
+  });
+  modeSelector.addEventListener("click", (e) => {
+    const btn = e.target.closest(".mode-btn");
+    if (btn) selectMode(btn.dataset.mode);
+  });
+  modeSelector.addEventListener("keydown", (e) => {
+    const currentIndex = modeButtons.indexOf(document.activeElement);
+    if (e.key === "Escape") {
+      e.preventDefault();
+      setMenuOpen(false, { pinned: false });
+      modeTrigger.focus();
+    } else if ((e.key === "Enter" || e.key === " ") && document.activeElement === modeTrigger) {
+      e.preventDefault();
+      setMenuOpen(true, { pinned: true, focusSelected: true });
+    } else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) {
+      e.preventDefault();
+      const nextIndex = e.key === "Home" ? 0 : e.key === "End" ? modeButtons.length - 1 : (currentIndex < 0 ? modeButtons.findIndex((btn) => btn.dataset.mode === state.agentMode) : currentIndex + (e.key === "ArrowDown" ? 1 : -1) + modeButtons.length) % modeButtons.length;
+      setMenuOpen(true, { pinned: true });
+      modeButtons[nextIndex].focus();
+    } else if ((e.key === "Enter" || e.key === " ") && currentIndex >= 0) {
+      e.preventDefault();
+      selectMode(modeButtons[currentIndex].dataset.mode);
+    }
+  });
+  document.addEventListener("pointerdown", (e) => {
+    if (!modeSelector.contains(e.target)) setMenuOpen(false, { pinned: false });
+  });
+  modeSelector.addEventListener("focusout", () => {
+    window.setTimeout(() => {
+      if (!modeSelector.contains(document.activeElement)) setMenuOpen(false, { pinned: false });
+    });
   });
 }
 

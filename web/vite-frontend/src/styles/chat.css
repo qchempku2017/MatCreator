@@ -1249,26 +1249,16 @@ details.step-feed-nested {
     animation: none;
   }
 }
-.composer-controls,
-.composer-input-row {
+.composer-input-row,
+.composer-toolbar {
   width: 100%;
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   gap: 8px;
 }
 
-.composer-controls {
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-}
-
-.composer-left-tools {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  flex: 1 1 320px;
+.composer-toolbar {
+  min-height: 30px;
 }
 
 .plan-approval-actions {
@@ -1383,7 +1373,7 @@ body[data-theme="light"] .composer-icon-btn {
 body[data-theme="light"] .composer-icon-btn:hover {
   background: rgba(14, 116, 144, 0.08);
 }
-.text-input { flex: 1; background: transparent; border: none; color: var(--text); font-size: 15px; resize: none; line-height: 1.5; }
+.text-input { flex: 1; width: 100%; background: transparent; border: none; color: var(--text); font-size: 15px; resize: none; line-height: 1.5; }
 .input-container .text-input { min-height: calc(1.5em * 1); max-height: calc(1.5em * 3); overflow-y: auto; }
 .text-input:focus { outline: none; }
 .send-btn,
@@ -1396,6 +1386,15 @@ body[data-theme="light"] .composer-icon-btn:hover {
   border-radius: 12px;
   cursor: pointer;
   flex: 0 0 44px;
+}
+.composer-toolbar .send-btn { margin-left: auto; }
+.composer-toolbar .tool-btn,
+.composer-toolbar .send-btn {
+  width: 30px;
+  height: 30px;
+  flex-basis: 30px;
+  border-radius: 8px;
+  font-size: 16px;
 }
 .send-btn:hover,
 .tool-btn:hover { border-color: var(--accent); color: var(--accent); }

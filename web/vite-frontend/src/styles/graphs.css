@@ -1,5 +1,5 @@
 /* ── Agent Graph panel ──────────────────────────────────── */
-.graph-column {
+.graph-rail {
   display: flex;
   flex-direction: column;
   gap: 0;
@@ -12,6 +12,14 @@
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: var(--panel-shadow);
+}
+
+.graph-column {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .left-home-card,
@@ -117,7 +125,10 @@ body[data-theme="light"] .theme-icon-sun {
 
 .graph-card {
   display: flex; flex-direction: column;
-  flex: 1 1 auto;
+  /* A zero basis keeps the canvas's periodically written pixel height from
+     becoming this item's flex base size.  Otherwise it competes with the
+     percentage-sized Remote Jobs pane and causes a layout feedback loop. */
+  flex: 1 1 0;
   min-height: 220px;
   padding-top: 40px;
   background: transparent;
@@ -206,7 +217,15 @@ body[data-theme="light"] .graph-panel-title {
   backdrop-filter: blur(8px);
   display: flex;
   flex-direction: column;
-  transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
+  transition: bottom 260ms cubic-bezier(0.4, 0, 0.2, 1), transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
+}
+
+.graph-rail.remote-jobs-expanded .plan-graph-thumbnail-btn {
+  bottom: calc(min(30vh, 320px) - 37px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .plan-graph-thumbnail-btn { transition: none; }
 }
 
 .plan-graph-thumbnail-btn::before {
@@ -401,4 +420,3 @@ body[data-theme="light"] .plan-graph-thumbnail-label {
   outline: none;
 }
 .col-resizer.hidden { display: none; }
-
