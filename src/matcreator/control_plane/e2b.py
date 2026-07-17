@@ -66,7 +66,7 @@ class E2BSandboxAdapter:
 
     def run_command(self, sandbox_id: str, command: str, *, user: str = "root") -> dict[str, Any]:
         sandbox = self._connect(sandbox_id)
-        result = sandbox.commands.run(command, user=user)
+        result = sandbox.commands.run(command, user=user, timeout=0)
         return {
             "stdout": str(getattr(result, "stdout", "")),
             "stderr": str(getattr(result, "stderr", "")),

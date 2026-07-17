@@ -32,16 +32,16 @@ def _connection() -> E2BConnectionConfig:
     return E2BConnectionConfig(
         api_key=os.environ.get("E2B_API_KEY", ""),
         api_url=os.environ.get("E2B_API_URL", ""),
-        project_id=os.environ.get("E2B_PROJECT_ID", ""),
-        template=os.environ.get("E2B_TEMPLATE", "doc-compiler"),
+        project_id=os.environ.get("BOHRIUM_PROJECT_ID", ""),
+        template="",
     )
 
 
 def submit_e2b_sandbox(
     tool_context: ToolContext,
     *,
-    timeout: int = 600,
-    template: str = "",
+    timeout: int = 7200,
+    template: str = None,
     lifecycle: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Create or reuse a tracked E2B sandbox for the current execution step.
@@ -55,13 +55,17 @@ def submit_e2b_sandbox(
         return {"status": "error", "message": "No session_id is available for E2B submission."}
     node_id = _node_id(tool_context)
     connection = _connection()
-    if template:
-        connection = E2BConnectionConfig(
-            api_key=connection.api_key,
-            api_url=connection.api_url,
-            project_id=connection.project_id,
-            template=template,
-        )
+    if not template:
+        return {
+            "status": "error",
+            "message": "An explicit E2B sandbox template is required. Use 'lbg sdbx template ls -q' to list available templates.",
+        }
+    connection = E2BConnectionConfig(
+        api_key=connection.api_key,
+        api_url=connection.api_url,
+        project_id=connection.project_id,
+        template=template,
+    )
     identity = f"{session_id}:{node_id}:{connection.template}"
     idempotency_key = f"e2b:{hashlib.sha256(identity.encode()).hexdigest()}"
     try:

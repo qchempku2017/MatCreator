@@ -18,13 +18,16 @@ control the sandbox even after the agent or browser reconnects.
 
 ## Submission
 
-1. Call `submit_e2b_sandbox` once for the current step. It is idempotent for
+1. Choose `template` explicitly for every `submit_e2b_sandbox` call. When the
+   template name is unknown, run `lbg sdbx template ls -q` to list available
+   templates. Install the command with `pip install -U --pre lbg` when needed.
+2. Call `submit_e2b_sandbox` once for the current step. It is idempotent for
    the current session, node, and template.
-2. Use `upload_e2b_input` for workspace files, then use `run_e2b_command` for
+3. Use `upload_e2b_input` for workspace files, then use `run_e2b_command` for
    the sandbox command. Both require the returned `job_id`.
-3. Record the returned `job_id` in the step result and use it for status and
+4. Record the returned `job_id` in the step result and use it for status and
    sandbox control.
-4. Do not invoke the E2B SDK directly, use `curl`, or expose API credentials in
+5. Do not invoke the E2B SDK directly, use `curl`, or expose API credentials in
    commands, files, or responses.
 
 ## Controls
@@ -32,6 +35,8 @@ control the sandbox even after the agent or browser reconnects.
 - `get_e2b_job_status` reads the persisted provider snapshot.
 - `pause_e2b_sandbox` preserves the sandbox and pauses remote execution.
 - `terminate_e2b_sandbox` irreversibly kills the sandbox.
+- After a command succeeds, record or collect all required outputs before
+   calling `terminate_e2b_sandbox` to release sandbox resources.
 
 The frontend can issue the same controls. Before continuing dependent work after
 a pause or termination, return a `needs_replanning` step result with the job ID

@@ -40,7 +40,6 @@ from .config import get_llm_config, get_bohrium_config, get_compute_config, get_
 _llm_cfg = get_llm_config()
 _bohrium_cfg = get_bohrium_config()
 _compute_cfg = get_compute_config()
-_e2b_cfg = load_config().get("e2b", {})
 
 _yaml_to_env: dict[str, str | None] = {
     "LLM_MODEL":            _llm_cfg.get("model"),
@@ -51,11 +50,9 @@ _yaml_to_env: dict[str, str | None] = {
     "REVIEW_AGENT_MODEL":   _llm_cfg.get("review_agent_model"),
     "BOHRIUM_USERNAME":     _bohrium_cfg.get("email"),
     "BOHRIUM_PASSWORD":     _bohrium_cfg.get("password"),
+    "BOHRIUM_ACCESS_KEY":   _bohrium_cfg.get("access_key"),
+    "BOHRIUM_API_URL":      _bohrium_cfg.get("api_url"),
     "BOHRIUM_PROJECT_ID":   str(_bohrium_cfg["project_id"]) if _bohrium_cfg.get("project_id") else None,
-    "E2B_API_KEY":          _e2b_cfg.get("api_key"),
-    "E2B_API_URL":          _e2b_cfg.get("api_url"),
-    "E2B_PROJECT_ID":       str(_e2b_cfg["project_id"]) if _e2b_cfg.get("project_id") else None,
-    "E2B_TEMPLATE":         _e2b_cfg.get("template"),
     "BOHRIUM_VASP_IMAGE":   _compute_cfg.get("vasp_image"),
     "BOHRIUM_VASP_MACHINE": _compute_cfg.get("vasp_machine"),
     "BOHRIUM_DEEPMD_IMAGE": _compute_cfg.get("deepmd_image"),
@@ -100,10 +97,8 @@ LLM_BASE_URL: str = os.environ.get("LLM_BASE_URL", "")
 BOHRIUM_USERNAME: str = os.environ.get("BOHRIUM_USERNAME", "")
 BOHRIUM_PASSWORD: str = os.environ.get("BOHRIUM_PASSWORD", "")
 BOHRIUM_PROJECT_ID: int | str = os.environ.get("BOHRIUM_PROJECT_ID", 00000)
-E2B_API_KEY: str = os.environ.get("E2B_API_KEY", "")
-E2B_API_URL: str = os.environ.get("E2B_API_URL", "")
-E2B_PROJECT_ID: str = os.environ.get("E2B_PROJECT_ID", "")
-E2B_TEMPLATE: str = os.environ.get("E2B_TEMPLATE", "")
+BOHRIUM_ACCESS_KEY: str = os.environ.get("BOHRIUM_ACCESS_KEY", "")
+BOHRIUM_API_URL: str = os.environ.get("BOHRIUM_API_URL", "")
 EXECUTION_ENABLE_WITHIN_INVOCATION_COMPACTION: str|int = os.environ.get("EXECUTION_ENABLE_WITHIN_INVOCATION_COMPACTION", 1)
 EXECUTION_COMPACT_KEEP_TAIL: int = int(os.environ.get("EXECUTION_COMPACT_KEEP_TAIL", "10"))
 EXECUTION_COMPACT_EVERY_EVENTS: int = int(os.environ.get("EXECUTION_COMPACT_EVERY_EVENTS", "5"))

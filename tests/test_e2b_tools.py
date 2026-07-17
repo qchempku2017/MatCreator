@@ -65,10 +65,9 @@ def test_submit_e2b_tool_uses_current_session_and_node(monkeypatch) -> None:
     monkeypatch.setattr(e2b_tools, "_service", lambda: service)
     monkeypatch.setenv("E2B_API_KEY", "secret")
     monkeypatch.setenv("E2B_API_URL", "https://e2b.example")
-    monkeypatch.setenv("E2B_PROJECT_ID", "project-42")
-    monkeypatch.setenv("E2B_TEMPLATE", "doc-compiler")
+    monkeypatch.setenv("BOHRIUM_PROJECT_ID", "project-42")
 
-    result = e2b_tools.submit_e2b_sandbox(_context(), timeout=120)
+    result = e2b_tools.submit_e2b_sandbox(_context(), timeout=120, template="doc-compiler")
 
     assert result == {
         "status": "running",
@@ -86,6 +85,32 @@ def test_submit_e2b_tool_uses_current_session_and_node(monkeypatch) -> None:
         api_url="https://e2b.example",
         project_id="project-42",
         template="doc-compiler",
+    )
+
+
+def test_submit_e2b_tool_requires_explicit_template(monkeypatch) -> None:
+    service = _FakeService()
+    monkeypatch.setattr(e2b_tools, "_service", lambda: service)
+
+    result = e2b_tools.submit_e2b_sandbox(_context())
+
+    assert result["status"] == "error"
+    assert "template is required" in result["message"]
+    assert service.submissions == []
+
+
+def test_e2b_connection_uses_configured_environment_names(monkeypatch) -> None:
+    monkeypatch.setenv("E2B_API_KEY", "access-key")
+    monkeypatch.setenv("E2B_API_URL", "https://e2b.example")
+    monkeypatch.setenv("BOHRIUM_PROJECT_ID", "project-7")
+
+    connection = e2b_tools._connection()
+
+    assert connection == E2BConnectionConfig(
+        api_key="access-key",
+        api_url="https://e2b.example",
+        project_id="project-7",
+        template="",
     )
 
 

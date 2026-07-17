@@ -71,3 +71,4 @@ def test_e2b_job_controls_update_durable_state(tmp_path) -> None:
     terminated = service.terminate_e2b(paused["job_id"])
     assert terminated["status"] == "terminated"
     assert adapter.terminated == ["sandbox-123"]
+
