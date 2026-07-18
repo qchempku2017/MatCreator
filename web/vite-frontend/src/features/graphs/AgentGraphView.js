@@ -10,13 +10,25 @@ const NODE_COLORS = {
 
 const STATUS_COLORS = {
   running:          { core: "251, 191, 36", edge: "254, 240, 138", font: "#fffbeb" },
-  success:          null,
+  success:          { core: "34, 197, 94", edge: "134, 239, 172", font: "#f0fdf4" },
   failed:           { core: "239, 68, 68", edge: "252, 165, 165", font: "#fff1f2" },
+  cancelled:        { core: "100, 116, 139", edge: "203, 213, 225", font: "#f8fafc" },
   needs_replanning: { core: "249, 115, 22", edge: "253, 186, 116", font: "#fff7ed" },
   idle:             { core: "71, 85, 105", edge: "148, 163, 184", font: "#cbd5e1" },
 };
 
 const rgba = (rgb, alpha) => `rgba(${rgb}, ${alpha})`;
+
+const STATUS_ALIASES = {
+  completed: "success",
+  succeeded: "success",
+  cancelled: "cancelled",
+  canceled: "cancelled",
+  terminated: "cancelled",
+  pending: "idle",
+  waiting: "idle",
+  blocked: "needs_replanning",
+};
 
 export class AgentGraphView {
   constructor(containerId, dependencies) {
@@ -183,10 +195,13 @@ export class AgentGraphView {
     return 13;
   }
 
-  _nodeRenderer(raw, colors, badge, radius, isRunning) {
+  _nodeRenderer(raw, typeColors, statusColors, badge, radius) {
     return ({ ctx, x, y, state }) => {
       const selected = Boolean(state?.selected);
       const hover = Boolean(state?.hover);
+      const status = raw.status || "idle";
+      const isRunning = status === "running";
+      const isCancelled = status === "cancelled";
       const drawRadius = radius + (selected ? 2 : hover ? 1 : 0);
       const borderWidth = isRunning ? 1.8 : selected ? 2.4 : 1.4;
 
@@ -204,6 +219,54 @@ export class AgentGraphView {
             : 0.35;
           const isLight = document.body.dataset.theme === "light";
 
+          // Use an explicit radial aura instead of relying on canvas shadow
+          // blur. The latter becomes nearly invisible once the opaque node
+          // face is painted over it, particularly at normal graph zoom.
+          const drawGlow = (color, extent, alpha) => {
+            const innerRadius = Math.max(1, drawRadius - 2);
+            const outerRadius = drawRadius + extent;
+            const aura = ctx.createRadialGradient(
+              x, y, innerRadius,
+              x, y, outerRadius,
+            );
+            aura.addColorStop(0, rgba(color, alpha));
+            aura.addColorStop(0.28, rgba(color, alpha * 0.9));
+            aura.addColorStop(0.68, rgba(color, alpha * 0.34));
+            aura.addColorStop(1, rgba(color, 0));
+            ctx.beginPath();
+            ctx.arc(x, y, outerRadius, 0, Math.PI * 2);
+            ctx.fillStyle = aura;
+            ctx.fill();
+          };
+
+          if (isRunning) {
+            const glowStrength = this._reduceMotion ? 0.72 : 0.56 + pulse * 0.34;
+            drawGlow(
+              statusColors.core,
+              8 + pulse * 6,
+              glowStrength * (isLight ? 0.5 : 0.68),
+            );
+            drawGlow(
+              statusColors.edge,
+              4 + pulse * 2,
+              glowStrength * (isLight ? 0.3 : 0.42),
+            );
+          } else if (status === "success") {
+            drawGlow(statusColors.core, isLight ? 8 : 10, isLight ? 0.34 : 0.46);
+          } else if (status === "failed") {
+            drawGlow(statusColors.core, isLight ? 11 : 14, isLight ? 0.48 : 0.64);
+            drawGlow(statusColors.edge, 5, isLight ? 0.28 : 0.38);
+          } else if (status === "needs_replanning") {
+            drawGlow(statusColors.core, isLight ? 9 : 12, isLight ? 0.4 : 0.54);
+          }
+
+          // Selection is deliberately tighter and neutral, so it reads as an
+          // interaction highlight rather than another lifecycle color.
+          if (selected) {
+            const selectionColor = isLight ? "15, 23, 42" : "248, 250, 252";
+            drawGlow(selectionColor, 6, isLight ? 0.28 : 0.4);
+          }
+
           // First paint an opaque backing plate. Edges are rendered on the
           // layer below nodes, so this makes connections terminate cleanly at
           // the badge boundary instead of showing through its colored face.
@@ -212,38 +275,26 @@ export class AgentGraphView {
           ctx.fillStyle = isLight ? "#f5f7fb" : "#111827";
           ctx.fill();
 
-          // A restrained, nearly-flat tint preserves type/status color while
-          // keeping the badge and its text diagram-sharp.
+          // A restrained, nearly-flat tint keeps the type hue legible while
+          // preserving a diagram-sharp badge and label.
           ctx.beginPath();
           ctx.arc(x, y, drawRadius - 0.7, 0, Math.PI * 2);
-          ctx.fillStyle = rgba(colors.core, isLight
+          const faceAlpha = isCancelled ? 0.55 : 1;
+          ctx.fillStyle = rgba(typeColors.core, faceAlpha * (isLight
             ? (hover || selected ? 0.3 : 0.2)
-            : (hover || selected ? 0.54 : 0.4));
+            : (hover || selected ? 0.54 : 0.4)));
           ctx.fill();
           ctx.lineWidth = borderWidth;
-          ctx.strokeStyle = rgba(colors.core, selected ? 1 : hover ? 0.9 : 0.76);
+          ctx.strokeStyle = rgba(
+            typeColors.core,
+            faceAlpha * (selected ? 1 : hover ? 0.9 : 0.76),
+          );
           ctx.stroke();
 
-          // A rotating broken orbit makes running state legible without a
-          // distracting whole-node scale animation.
-          if (isRunning) {
-            ctx.beginPath();
-            ctx.arc(
-              x,
-              y,
-              drawRadius + 4 + pulse,
-              this._motionTime / 700,
-              this._motionTime / 700 + Math.PI * 1.42,
-            );
-            ctx.lineWidth = 1.2;
-            ctx.lineCap = "round";
-            ctx.strokeStyle = rgba(colors.core, 0.48 + pulse * 0.34);
-            ctx.stroke();
-          }
-
           ctx.fillStyle = isLight
-            ? (isRunning ? "#713f12" : "#172033")
-            : colors.font;
+            ? "#172033"
+            : typeColors.font;
+          if (isCancelled) ctx.globalAlpha = 0.72;
           ctx.font = `800 ${badge.length > 1 ? 11 : 12.5}px Manrope, system-ui, sans-serif`;
           ctx.textAlign = "center";
           ctx.textBaseline = "middle";
@@ -264,9 +315,6 @@ export class AgentGraphView {
 
   _visNode(raw) {
     const typeColors = NODE_COLORS[raw.type] || NODE_COLORS.step;
-    const statusOverride = STATUS_COLORS[raw.status];
-    const colors = statusOverride || typeColors;
-    const isRunning = raw.status === "running";
     const badge = this._nodeBadge(raw);
     const radius = this._nodeRadius(raw);
     return {
@@ -274,13 +322,32 @@ export class AgentGraphView {
       label: "",
       shape: "custom",
       color: {
-        background: rgba(colors.core, 0.28),
-        border: rgba(colors.edge, 0.64),
-        highlight: { background: rgba(colors.core, 0.48), border: rgba(colors.edge, 0.9) },
+        background: rgba(typeColors.core, 0.28),
+        border: rgba(typeColors.edge, 0.64),
+        highlight: { background: rgba(typeColors.core, 0.48), border: rgba(typeColors.edge, 0.9) },
       },
-      ctxRenderer: this._nodeRenderer(raw, colors, badge, radius, isRunning),
+      // vis-network may retain a custom renderer between DataSet updates.
+      // Resolve the current node data while painting so a completed node can
+      // never keep the renderer closure from its earlier running state.
+      ctxRenderer: (params) => {
+        const current = this._nodeData[raw.id] || raw;
+        const currentTypeColors = NODE_COLORS[current.type] || NODE_COLORS.step;
+        const currentStatusColors = STATUS_COLORS[current.status] || STATUS_COLORS.idle;
+        return this._nodeRenderer(
+          current,
+          currentTypeColors,
+          currentStatusColors,
+          this._nodeBadge(current),
+          this._nodeRadius(current),
+        )(params);
+      },
       title: this._nodeTooltip(raw),
     };
+  }
+
+  _normalizeNodeStatus(status) {
+    const normalized = String(status || "idle").toLowerCase();
+    return STATUS_ALIASES[normalized] || (STATUS_COLORS[normalized] ? normalized : "idle");
   }
 
   _drawActiveFlow(ctx) {
@@ -362,63 +429,39 @@ export class AgentGraphView {
   }
 
   _computeLevels(rawNodes, edges) {
-    const nodeMap = Object.fromEntries(rawNodes.map(n => [n.id, n]));
-    const children = {};
-    const hasParent = new Set();
-    edges.forEach(e => {
-      (children[e.from] = children[e.from] || []).push(e.to);
-      hasParent.add(e.to);
+    const nodeIds = rawNodes.map((node) => node.id);
+    const nodeIdSet = new Set(nodeIds);
+    const children = Object.fromEntries(nodeIds.map((id) => [id, []]));
+    const inDegree = Object.fromEntries(nodeIds.map((id) => [id, 0]));
+
+    // Levels describe hierarchy, not elapsed time. Tasks with the same parent
+    // therefore remain siblings on the same row even if they ran sequentially.
+    (edges || []).forEach((edge) => {
+      if (!nodeIdSet.has(edge.from) || !nodeIdSet.has(edge.to)) return;
+      children[edge.from].push(edge.to);
+      inDegree[edge.to] += 1;
     });
-    const roots = rawNodes.map(n => n.id).filter(id => !hasParent.has(id));
+
     const levels = {};
+    const queue = nodeIds.filter((id) => inDegree[id] === 0);
+    queue.forEach((id) => { levels[id] = 0; });
 
-    // Recursively assign levels. Among siblings, sort by start_time and
-    // increment the level each time a child starts after the previous group ends
-    // (sequential). Children whose time windows overlap stay at the same level
-    // (parallel).
-    function assign(id, minLevel) {
-      if (levels[id] !== undefined && levels[id] >= minLevel) return;
-      levels[id] = minLevel;
-
-      const currentType = nodeMap[id]?.type;
-      if (currentType === "orchestrator") {
-        (children[id] || []).forEach((kid) => assign(kid, 1));
-        return;
-      }
-      if (currentType === "planning") {
-        (children[id] || []).forEach((kid) => assign(kid, 2));
-        return;
-      }
-
-      const kids = (children[id] || []).slice().sort((a, b) => {
-        const ta = nodeMap[a]?.start_time ? new Date(nodeMap[a].start_time).getTime() : Infinity;
-        const tb = nodeMap[b]?.start_time ? new Date(nodeMap[b].start_time).getTime() : Infinity;
-        return ta - tb;
+    while (queue.length) {
+      const parentId = queue.shift();
+      children[parentId].forEach((childId) => {
+        levels[childId] = Math.max(
+          levels[childId] ?? 0,
+          (levels[parentId] ?? 0) + 1,
+        );
+        inDegree[childId] -= 1;
+        if (inDegree[childId] === 0) queue.push(childId);
       });
-
-      let nextLevel = minLevel + 1;
-      let groupEndTime = null; // latest end_time seen in the current parallel group
-
-      for (const kid of kids) {
-        const kidStart = nodeMap[kid]?.start_time ? new Date(nodeMap[kid].start_time).getTime() : null;
-        const kidEnd   = nodeMap[kid]?.end_time   ? new Date(nodeMap[kid].end_time).getTime()   : null;
-
-        if (groupEndTime !== null && kidStart !== null && kidStart >= groupEndTime) {
-          // This child starts after the previous group ended — sequential, new level
-          nextLevel++;
-          groupEndTime = kidEnd;
-        } else {
-          // Concurrent with previous group (or no timing info) — extend group window
-          if (groupEndTime === null || (kidEnd !== null && kidEnd > groupEndTime)) {
-            groupEndTime = kidEnd;
-          }
-        }
-
-        assign(kid, nextLevel);
-      }
     }
 
-    roots.forEach(r => assign(r, 0));
+    // Keep malformed/cyclic payloads visible rather than dropping their nodes.
+    nodeIds.forEach((id) => {
+      if (!(id in levels)) levels[id] = 0;
+    });
     return levels;
   }
 
@@ -427,15 +470,15 @@ export class AgentGraphView {
     const phaseTypes = new Set(["planning", "execution", "tester"]);
     const displayEdges = [];
     const phaseNodes = rawNodes
-      .filter((n) => n.parent_id === "orchestrator" && phaseTypes.has(n.type))
+      .filter((n) => phaseTypes.has(n.type))
       .sort((a, b) => {
         const ta = a.start_time ? new Date(a.start_time).getTime() : Infinity;
         const tb = b.start_time ? new Date(b.start_time).getTime() : Infinity;
         return ta - tb;
       });
 
-    const planningNodes = phaseNodes.filter((n) => n.type === "planning");
-    const childPhaseNodes = phaseNodes.filter((n) => n.type !== "planning");
+    const planningNodes = phaseNodes.filter((node) => node.type === "planning");
+    const childPhaseNodes = phaseNodes.filter((node) => node.type !== "planning");
 
     planningNodes.forEach((planning) => {
       displayEdges.push({
@@ -445,22 +488,24 @@ export class AgentGraphView {
       });
     });
 
+    // Phase nodes are logged as orchestrator children because the orchestrator
+    // invokes them. For display, group each execution/testing phase beneath
+    // the planning invocation whose context produced it.
     childPhaseNodes.forEach((node) => {
-      let parentPlanning = null;
       const nodeStart = node.start_time ? new Date(node.start_time).getTime() : Infinity;
-
+      let parentPlanning = null;
       for (const planning of planningNodes) {
-        const planningStart = planning.start_time ? new Date(planning.start_time).getTime() : -Infinity;
-        if (planningStart <= nodeStart) {
-          parentPlanning = planning;
-        } else {
-          break;
-        }
+        const planningStart = planning.start_time
+          ? new Date(planning.start_time).getTime()
+          : -Infinity;
+        if (planningStart <= nodeStart) parentPlanning = planning;
+        else break;
       }
 
+      const parentId = parentPlanning?.id || "orchestrator";
       displayEdges.push({
-        id: `phase__${(parentPlanning || { id: "orchestrator" }).id}__${node.id}`,
-        from: parentPlanning ? parentPlanning.id : "orchestrator",
+        id: `phase__${parentId}__${node.id}`,
+        from: parentId,
         to: node.id,
       });
     });
@@ -470,12 +515,10 @@ export class AgentGraphView {
       const toNode = nodeMap[edge.to];
       if (!fromNode || !toNode) return;
 
-      const isTopLevelPhaseEdge =
-        edge.from === "orchestrator" &&
-        toNode.parent_id === "orchestrator" &&
-        phaseTypes.has(toNode.type);
-
-      if (isTopLevelPhaseEdge) return;
+      // Phase relationships are normalized above. Ignore their persisted
+      // incoming edges so sessions created by either logger version render
+      // with the same Planning -> Execution grouping.
+      if (phaseTypes.has(toNode.type)) return;
 
       displayEdges.push({
         id: edge.id || `${edge.from}__${edge.to}`,
@@ -518,14 +561,19 @@ export class AgentGraphView {
 
     const prevNodeIds = new Set(this._nodes.getIds());
     const prevEdgeIds = new Set(this._edges.getIds());
-    const rawNodes = Object.values(graphData.nodes);
-    this._nodeData = graphData.nodes;
+    const rawNodes = Object.values(graphData.nodes).map((node) => ({
+      ...node,
+      status: this._normalizeNodeStatus(node.status),
+    }));
+    this._nodeData = Object.fromEntries(rawNodes.map((node) => [node.id, node]));
     this._stepExecutionFeed.update(graphData);
     const displayEdges = this._buildDisplayEdges(rawNodes, graphData.edges || []);
     const rawNodeMap = Object.fromEntries(rawNodes.map((node) => [node.id, node]));
     this._hasRunningNodes = rawNodes.some((node) => node.status === "running");
     this._activeEdges = displayEdges
-      .filter((edge) => rawNodeMap[edge.from]?.status === "running" || rawNodeMap[edge.to]?.status === "running")
+      // A transfer is only live while both sides are active. This prevents
+      // particles on completed edges when another, unrelated node is running.
+      .filter((edge) => rawNodeMap[edge.from]?.status === "running" && rawNodeMap[edge.to]?.status === "running")
       .map((edge, index) => ({
         ...edge,
         color: STATUS_COLORS.running,
@@ -818,7 +866,7 @@ export class StepExecutionFeed {
     this._childNodes = new Map();
   }
 
-  startLiveTurn(anchorEl, startedAt = Date.now()) {
+  startLiveTurn(anchorEl, startedAt = Date.now(), hostEl = null) {
     this._liveAnchorEl = anchorEl || null;
     this._liveStartedAt = startedAt;
     this._liveContainerEl = document.createElement("div");
@@ -826,7 +874,9 @@ export class StepExecutionFeed {
     this._liveContainerEl.dataset.stepLiveRegion = "true";
     this._liveToolHostEl = null;
 
-    if (anchorEl && anchorEl.parentNode === this._chatArea) {
+    if (hostEl?.isConnected) {
+      hostEl.appendChild(this._liveContainerEl);
+    } else if (anchorEl && anchorEl.parentNode === this._chatArea) {
       this._chatArea.insertBefore(this._liveContainerEl, anchorEl.nextSibling);
     } else {
       this._chatArea.appendChild(this._liveContainerEl);
@@ -836,7 +886,10 @@ export class StepExecutionFeed {
   }
 
   attachLiveToolHost(hostEl) {
-    if (!hostEl || this._liveToolHostEl === hostEl) return;
+    // The live feed now has a permanent host in the active assistant bubble.
+    // Do not move cards into a transient timeline entry when it arrives.
+    if (this._liveContainerEl?.isConnected) return false;
+    if (!hostEl || this._liveToolHostEl === hostEl) return false;
     this._liveToolHostEl = hostEl;
     for (const [nodeId, card] of this._cards.entries()) {
       const node = this._stepById.get(nodeId);
@@ -845,6 +898,7 @@ export class StepExecutionFeed {
         hostEl.appendChild(card);
       }
     }
+    return true;
   }
 
   finishLiveTurn() {

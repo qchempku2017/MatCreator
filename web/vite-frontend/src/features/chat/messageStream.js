@@ -38,6 +38,7 @@ export function createMessageStreamController(deps) {
   function stop() {
     const request = activeSessionRequest();
     if (!request) return;
+    sessionRuntime.suppressPlanApproval(request.sessionId);
     fetch(`/api/sessions/${state.sessionId}/cancel`, { method: "POST" }).catch(() => {});
     request.controller.abort();
     pollCancellationConfirmed(state.sessionId);
@@ -50,6 +51,7 @@ export function createMessageStreamController(deps) {
       addMessage("agent", `Admin view is read-only for ${state.activeSessionUserId}'s session.`);
       return;
     }
+    sessionRuntime.restorePlanApproval(state.sessionId);
     try { await fetch(`/api/sessions/${state.sessionId}/cancel`, { method: "DELETE" }); } catch (_) {}
 
     const uploads = state.currentUploads.slice();
@@ -66,10 +68,14 @@ export function createMessageStreamController(deps) {
       return;
     }
 
+    const timeline = [];
+    const shownPlotPaths = new Set();
+    const timelineContainer = addAgentTimelineMessage(timeline, shownPlotPaths);
+
     const previousPlanGraphKey = planGraph.currentGraphKey();
     agentGraph.reset();
     planGraph.reset();
-    const liveTurn = stepExecutionFeed.startLiveTurn(userMessage, startedAt);
+    const liveTurn = stepExecutionFeed.startLiveTurn(userMessage, startedAt, timelineContainer.parentElement);
     agentGraph.startPolling(state.sessionId);
     planGraph.startPolling(state.sessionId, { autoOpenOnNewGraph: true, autoOpenBaselineKey: previousPlanGraphKey });
     const owner = state.activeSessionUserId || state.userId;
@@ -80,15 +86,11 @@ export function createMessageStreamController(deps) {
     state.activeRequests.set(request.key, request);
     updateSendButtonState();
 
-    const timeline = [];
-    const shownPlotPaths = new Set();
-    let timelineContainer = null;
     let accumulatedText = "";
     let lineBuffer = "";
     let summaryTriggered = false;
     const renderPendingTimeline = () => {
-      if (timeline.length && !timelineContainer) timelineContainer = addAgentTimelineMessage(timeline, shownPlotPaths, undefined, liveTurn);
-      else if (timelineContainer) renderTimeline(timelineContainer, timeline, shownPlotPaths);
+      if (timeline.length) renderTimeline(timelineContainer, timeline, shownPlotPaths);
     };
     const handleAdkData = (data) => {
       if (data === "[DONE]") return;

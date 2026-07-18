@@ -20,6 +20,11 @@ export function createSessionRuntime({
   generateSessionSummary,
   workdirDisplay,
 }) {
+  // Plan approval is UI-derived from persisted events. A cancelled turn can
+  // still contain a successful validation event, so remember that its prompt
+  // was dismissed until the user deliberately starts another turn.
+  const suppressedPlanApprovalSessions = new Set();
+
   async function fetchSessionData(sessionId) {
     const owner = state.activeSessionUserId || state.userId;
     const response = await fetch(`/api/users/${encodeURIComponent(owner)}/sessions/${encodeURIComponent(sessionId)}`, {
@@ -112,12 +117,22 @@ export function createSessionRuntime({
     }));
   }
 
-  function shouldShowPlanApprovalActions(sessionData, events) {
+  function shouldShowPlanApprovalActions(sessionId, sessionData, events) {
     // This is deliberately UI-derived state. A successful validate_graph in
     // the latest user turn is the UI event that a plan was presented; no new
     // orchestration state is written for this feature.
     const state = sessionData?.state || {};
-    return (state.agent_mode || "normal") === "normal" && latestTurnHasValidatedPlan(events);
+    return !suppressedPlanApprovalSessions.has(sessionId)
+      && (state.agent_mode || "normal") === "normal"
+      && latestTurnHasValidatedPlan(events);
+  }
+
+  function suppressPlanApproval(sessionId) {
+    if (sessionId) suppressedPlanApprovalSessions.add(sessionId);
+  }
+
+  function restorePlanApproval(sessionId) {
+    if (sessionId) suppressedPlanApprovalSessions.delete(sessionId);
   }
 
   function renderSessionTimeline(events, stepNodes, awaitingPlanApproval = false) {
@@ -179,7 +194,7 @@ export function createSessionRuntime({
         renderSessionTimeline(
           events,
           graphNodes,
-          shouldShowPlanApprovalActions(sessionData, events),
+          shouldShowPlanApprovalActions(sessionId, sessionData, events),
         );
       }
       state.sessionViewCache.set(viewKey, { sessionData, events, graphNodes, files: [], summary });
@@ -254,7 +269,9 @@ export function createSessionRuntime({
     discoverManagedRun,
     loadSession,
     renderSessionTimeline,
+    restorePlanApproval,
     startManagedRunReconnect,
+    suppressPlanApproval,
     updateSessionWorkdirDisplay,
   };
 }

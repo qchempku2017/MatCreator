@@ -88,6 +88,7 @@
 .badge-running          { color: #FBBF24; border-color: #FBBF24; }
 .badge-success          { color: #34D399; border-color: #34D399; }
 .badge-failed           { color: #F87171; border-color: #F87171; }
+.badge-cancelled        { color: #F87171; border-color: #F87171; }
 .badge-needs_replanning { color: #FB923C; border-color: #FB923C; }
 .badge-idle             { color: var(--muted); }
 

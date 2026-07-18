@@ -1216,7 +1216,7 @@ function renderTimeline(container, timeline, shownPlotPaths = null) {
         if (Array.isArray(item.stepNodes) && item.stepNodes.length) {
           item.stepNodes.forEach((node) => stepExecutionFeed.appendStatic(node, inlineHost));
         } else if (activeSessionRequest()) {
-          stepExecutionFeed.attachLiveToolHost(inlineHost);
+          if (!stepExecutionFeed.attachLiveToolHost(inlineHost)) inlineHost.remove();
         }
       }
     } else if (item.type === "function_response") {
@@ -1262,7 +1262,9 @@ function renderTimeline(container, timeline, shownPlotPaths = null) {
 // chatArea, and return the inner container for live updates.
 function addAgentTimelineMessage(timeline, shownPlotPaths = null, msgIndex, container = chatArea) {
   const outer = document.createElement("div");
-  outer.className = "message agent-message";
+  // A live turn starts before the server has sent its first event. Keep its
+  // empty shell out of view until it contains a timeline item or step card.
+  outer.className = "message agent-message is-pending";
   if (msgIndex !== undefined) outer.dataset.msgIndex = String(msgIndex);
   outer.appendChild(createAgentAvatarEl());
   const bubble = document.createElement("div");
@@ -1271,8 +1273,17 @@ function addAgentTimelineMessage(timeline, shownPlotPaths = null, msgIndex, cont
   inner.className = "timeline-container";
   bubble.appendChild(inner);
   outer.appendChild(bubble);
+  const revealWhenPopulated = () => {
+    const liveRegion = outer.querySelector(".step-feed-live-region");
+    if (!inner.childElementCount && !liveRegion?.childElementCount) return;
+    outer.classList.remove("is-pending");
+    observer.disconnect();
+  };
+  const observer = new MutationObserver(revealWhenPopulated);
+  observer.observe(outer, { childList: true, subtree: true });
   appendLiveTurnChild(container, outer);
   renderTimeline(inner, timeline, shownPlotPaths);
+  revealWhenPopulated();
   return inner;
 }
 
@@ -1292,11 +1303,11 @@ function addPlanApprovalActions(timelineContainer) {
   actions.setAttribute("aria-label", "Plan actions");
 
   const disableControls = () => responseMessage.querySelectorAll("button, input").forEach((item) => { item.disabled = true; });
-  [["yes", "Approve", "Approve this plan and start execution"], ["replan", "Replan", "Ask the agent to revise this plan"]]
-    .forEach(([message, label, title]) => {
+  [["yes", "Approve plan", "Approve this plan and start execution", "is-approve"], ["replan", "Revise plan", "Ask the agent to revise this plan", "is-replan"]]
+    .forEach(([message, label, title, variant]) => {
       const button = document.createElement("button");
       button.type = "button";
-      button.className = "plan-approval-btn";
+      button.className = `plan-approval-btn ${variant}`;
       button.textContent = label;
       button.title = title;
       button.addEventListener("click", () => {
@@ -1308,6 +1319,9 @@ function addPlanApprovalActions(timelineContainer) {
 
   const feedback = document.createElement("div");
   feedback.className = "plan-feedback";
+  const feedbackLabel = document.createElement("label");
+  feedbackLabel.className = "plan-feedback-label";
+  feedbackLabel.textContent = "Or describe what you’d like changed";
   const input = document.createElement("input");
   input.type = "text";
   input.className = "plan-feedback-input";
@@ -1330,8 +1344,13 @@ function addPlanApprovalActions(timelineContainer) {
   submit.className = "plan-approval-btn plan-feedback-submit";
   submit.textContent = "Send";
   submit.title = "Send feedback about this plan";
+  submit.disabled = true;
+  input.addEventListener("input", () => {
+    submit.disabled = !input.value.trim();
+  });
   submit.addEventListener("click", sendFeedback);
-  feedback.append(input, submit);
+  feedbackLabel.appendChild(input);
+  feedback.append(feedbackLabel, submit);
   bubble.append(prompt, actions, feedback);
   responseMessage.appendChild(bubble);
   agentMessage.after(responseMessage);
