@@ -144,6 +144,9 @@
               <button class="center-tab active" id="tab-chat" type="button" role="tab" aria-selected="true" aria-controls="chat-tab-panel" data-tab-id="chat" title="Chat&#10;Double-click to edit session name">
                 <span class="center-tab-title session-tab-title" id="session-summary-text" data-default-title="Chat">Chat</span>
               </button>
+              <button class="center-tab hidden" id="tab-evaluation" type="button" role="tab" aria-selected="false" aria-controls="evaluation-tab-panel" data-tab-id="evaluation">
+                <span class="center-tab-title">Evaluation</span>
+              </button>
             </div>
           </div>
           <div class="center-tab-panels" id="center-tab-panels">
@@ -191,6 +194,28 @@
                   </div>
                 </div>
               </div>
+            </div>
+            <div class="center-tab-panel evaluation-tab-panel hidden" id="evaluation-tab-panel" role="tabpanel" aria-labelledby="tab-evaluation" data-tab-id="evaluation">
+              <div class="evaluation-main-header">
+                <div>
+                  <div class="eyebrow">Benchmark catalog</div>
+                  <h2>Questions</h2>
+                </div>
+                <button class="ghost" id="evaluation-refresh-catalog" type="button" title="Refresh benchmark catalog">↺</button>
+              </div>
+              <div class="evaluation-filters">
+                <input id="evaluation-search" class="evaluation-input" type="search" placeholder="Search questions">
+                <select id="evaluation-domain" class="evaluation-input" aria-label="Filter by domain"><option value="">All domains</option></select>
+                <select id="evaluation-capability" class="evaluation-input" aria-label="Filter by capability"><option value="">All capabilities</option></select>
+                <select id="evaluation-task-type" class="evaluation-input" aria-label="Filter by task type"><option value="">All task types</option></select>
+              </div>
+              <div class="evaluation-selection-bar">
+                <span id="evaluation-selection-count">0 selected</span>
+                <label class="evaluation-selected-toggle"><input id="evaluation-selected-only" type="checkbox"> Selected only</label>
+                <button class="ghost" id="evaluation-clear-selection" type="button">Clear</button>
+              </div>
+              <div class="evaluation-question-list" id="evaluation-question-list" aria-live="polite"></div>
+              <section class="evaluation-live-feed" id="evaluation-live-feed" aria-live="polite"></section>
             </div>
           </div>
           <div class="workspace-cli hidden" id="workspace-cli">
@@ -268,6 +293,52 @@
 
         <!-- Right: Sessions + Files -->
         <aside class="card side-panel" id="side-panel">
+          <div class="app-mode-switch" role="group" aria-label="Application mode">
+            <button class="app-mode-btn active" id="workspace-mode-btn" type="button" aria-pressed="true">Workspace</button>
+            <button class="app-mode-btn" id="evaluation-mode-btn" type="button" aria-pressed="false">Evaluation</button>
+          </div>
+          <section class="evaluation-pane hidden" id="evaluation-pane" aria-live="polite">
+            <div class="block-header">Evaluation
+              <button class="ghost" id="evaluation-refresh-campaigns" type="button" title="Refresh campaigns">↺</button>
+            </div>
+            <label class="evaluation-label" for="evaluation-model">Model label</label>
+            <input class="evaluation-input" id="evaluation-model" type="text" value="matcreator">
+            <div class="evaluation-number-grid">
+              <label class="evaluation-label" for="evaluation-parallelism">Parallelism
+                <input class="evaluation-input" id="evaluation-parallelism" type="number" min="1" value="1">
+              </label>
+              <label class="evaluation-label" for="evaluation-turns">Max turns
+                <input class="evaluation-input" id="evaluation-turns" type="number" min="1" value="50">
+              </label>
+              <label class="evaluation-label" for="evaluation-timeout">Timeout (s)
+                <input class="evaluation-input" id="evaluation-timeout" type="number" min="1" value="600">
+              </label>
+            </div>
+            <section class="evaluation-question-sets" aria-label="Saved question sets">
+              <div class="block-header">Question sets
+                <button class="ghost" id="evaluation-refresh-question-sets" type="button" title="Refresh question sets">↺</button>
+              </div>
+              <select class="evaluation-input" id="evaluation-question-set-select" aria-label="Saved question set">
+                <option value="">Load a saved set</option>
+              </select>
+              <div class="evaluation-question-set-save">
+                <input class="evaluation-input" id="evaluation-question-set-name" type="text" maxlength="120" placeholder="Set name">
+                <select class="evaluation-input" id="evaluation-question-set-visibility" aria-label="Question set visibility">
+                  <option value="private">Private</option>
+                  <option value="shared">Shared</option>
+                </select>
+              </div>
+              <div class="evaluation-question-set-actions">
+                <button class="ghost" id="evaluation-save-question-set" type="button">Save selection</button>
+                <button class="ghost" id="evaluation-update-question-set" type="button" disabled>Update</button>
+                <button class="ghost" id="evaluation-delete-question-set" type="button" disabled>Delete</button>
+              </div>
+            </section>
+            <button class="evaluation-start-btn" id="evaluation-create-start" type="button">Start evaluation</button>
+            <p class="evaluation-status" id="evaluation-status"></p>
+            <div class="evaluation-campaign-summary" id="evaluation-campaign-summary"></div>
+            <div class="evaluation-campaign-list" id="evaluation-campaign-list"></div>
+          </section>
           <section class="panel-block sessions-pane">
             <div class="block-header">Sessions
               <div class="session-header-actions">

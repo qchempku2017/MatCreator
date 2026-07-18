@@ -48,6 +48,14 @@ const state = {
   summaryGeneratedFor: new Set(),  // sessionIds that have triggered summary generation
   remoteJobs: [],
   remoteJobsExpanded: false,
+  appMode: "workspace",
+  evaluationCatalog: [],
+  evaluationCatalogTotal: null,
+  evaluationCatalogFacets: {},
+  evaluationQuestionSets: [],
+  activeEvaluationQuestionSetId: "",
+  selectedEvaluationQuestions: new Set(),
+  activeEvaluationCampaign: null,
 };
 
 // ---------------------------------------------------------------------------
@@ -107,6 +115,18 @@ const remoteJobListEl = document.getElementById("remote-job-list");
 const refreshRemoteJobsBtn = document.getElementById("refresh-remote-jobs");
 const remoteJobsToggleBtn = document.getElementById("remote-jobs-toggle");
 const remoteJobsPane = document.getElementById("remote-jobs-pane");
+const workspaceModeBtn = document.getElementById("workspace-mode-btn");
+const evaluationModeBtn = document.getElementById("evaluation-mode-btn");
+const evaluationPane = document.getElementById("evaluation-pane");
+const evaluationTab = document.getElementById("tab-evaluation");
+const evaluationTabPanel = document.getElementById("evaluation-tab-panel");
+const evaluationQuestionList = document.getElementById("evaluation-question-list");
+const evaluationSelectionCount = document.getElementById("evaluation-selection-count");
+const evaluationStatus = document.getElementById("evaluation-status");
+const evaluationCampaignSummary = document.getElementById("evaluation-campaign-summary");
+const evaluationCampaignList = document.getElementById("evaluation-campaign-list");
+const evaluationLiveFeed = document.getElementById("evaluation-live-feed");
+let evaluationPoll = null;
 let knowledgeReviewPoll = null;
 let remoteJobsPoll = null;
 let workspaceTerminal = null;
@@ -185,6 +205,473 @@ themeToggle?.addEventListener("click", () => {
 sessionIdEl.textContent = state.sessionId;
 if (state.userId) userDisplay.textContent = state.displayName || state.userId;
 refreshKnowledgeReviewStatus();
+
+function setEvaluationStatus(message = "", isError = false) {
+  if (!evaluationStatus) return;
+  evaluationStatus.textContent = message;
+  evaluationStatus.classList.toggle("is-error", isError);
+}
+
+function questionSetById(setId) {
+  return state.evaluationQuestionSets.find((questionSet) => questionSet.set_id === setId) || null;
+}
+
+function renderEvaluationQuestionSets() {
+  const select = document.getElementById("evaluation-question-set-select");
+  const updateButton = document.getElementById("evaluation-update-question-set");
+  const deleteButton = document.getElementById("evaluation-delete-question-set");
+  if (!select) return;
+  const selectedId = state.activeEvaluationQuestionSetId;
+  select.innerHTML = '<option value="">Load a saved set</option>';
+  for (const questionSet of state.evaluationQuestionSets) {
+    const option = document.createElement("option");
+    option.value = questionSet.set_id;
+    option.textContent = `${questionSet.name} (${questionSet.visibility})`;
+    select.appendChild(option);
+  }
+  select.value = selectedId;
+  const active = questionSetById(selectedId);
+  const owned = active?.owner_id === state.userId;
+  updateButton.disabled = !owned;
+  deleteButton.disabled = !owned;
+}
+
+async function loadEvaluationQuestionSets() {
+  if (!state.userId) return;
+  try {
+    const response = await fetch(`/api/evaluations/question-sets?user_id=${encodeURIComponent(state.userId)}`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(apiErrorMessage(data, `HTTP ${response.status}`));
+    state.evaluationQuestionSets = data.question_sets || [];
+    if (!questionSetById(state.activeEvaluationQuestionSetId)) state.activeEvaluationQuestionSetId = "";
+    renderEvaluationQuestionSets();
+  } catch (error) {
+    setEvaluationStatus(`Could not load question sets: ${error.message}`, true);
+  }
+}
+
+function loadSelectedQuestionSet(setId) {
+  state.activeEvaluationQuestionSetId = setId;
+  const questionSet = questionSetById(setId);
+  if (questionSet) {
+    state.selectedEvaluationQuestions = new Set(questionSet.question_ids || []);
+    document.getElementById("evaluation-question-set-name").value = questionSet.name;
+    document.getElementById("evaluation-question-set-visibility").value = questionSet.visibility;
+    renderEvaluationQuestions();
+  }
+  renderEvaluationQuestionSets();
+}
+
+async function saveEvaluationQuestionSet(update = false) {
+  const active = questionSetById(state.activeEvaluationQuestionSetId);
+  if (update && active?.owner_id !== state.userId) return;
+  const name = document.getElementById("evaluation-question-set-name")?.value.trim();
+  const visibility = document.getElementById("evaluation-question-set-visibility")?.value || "private";
+  if (!name || !state.selectedEvaluationQuestions.size) {
+    setEvaluationStatus("A set name and at least one selected question are required", true);
+    return;
+  }
+  const path = update ? `/api/evaluations/question-sets/${encodeURIComponent(active.set_id)}` : "/api/evaluations/question-sets";
+  try {
+    const response = await fetch(`${path}?user_id=${encodeURIComponent(state.userId)}`, {
+      method: update ? "PATCH" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, visibility, question_ids: [...state.selectedEvaluationQuestions] }),
+    });
+    const questionSet = await response.json();
+    if (!response.ok) throw new Error(apiErrorMessage(questionSet, `HTTP ${response.status}`));
+    state.activeEvaluationQuestionSetId = questionSet.set_id;
+    await loadEvaluationQuestionSets();
+    setEvaluationStatus(update ? "Question set updated" : "Question set saved");
+  } catch (error) {
+    setEvaluationStatus(`Could not save question set: ${error.message}`, true);
+  }
+}
+
+async function deleteEvaluationQuestionSet() {
+  const active = questionSetById(state.activeEvaluationQuestionSetId);
+  if (!active || active.owner_id !== state.userId) return;
+  try {
+    const response = await fetch(
+      `/api/evaluations/question-sets/${encodeURIComponent(active.set_id)}?user_id=${encodeURIComponent(state.userId)}`,
+      { method: "DELETE" },
+    );
+    if (!response.ok) throw new Error(apiErrorMessage(await response.json(), `HTTP ${response.status}`));
+    state.activeEvaluationQuestionSetId = "";
+    await loadEvaluationQuestionSets();
+    setEvaluationStatus("Question set deleted");
+  } catch (error) {
+    setEvaluationStatus(`Could not delete question set: ${error.message}`, true);
+  }
+}
+
+function apiErrorMessage(data, fallback) {
+  const detail = data?.detail;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    return detail.map((item) => {
+      const field = Array.isArray(item?.loc) ? item.loc.filter((part) => part !== "body").join(".") : "request";
+      return `${field || "request"}: ${item?.msg || "invalid value"}`;
+    }).join("; ");
+  }
+  return fallback;
+}
+
+function renderEvaluationQuestions() {
+  if (!evaluationQuestionList) return;
+  evaluationQuestionList.innerHTML = "";
+  const selectedOnly = document.getElementById("evaluation-selected-only")?.checked;
+  const questions = selectedOnly
+    ? state.evaluationCatalog.filter((question) => state.selectedEvaluationQuestions.has(question.id))
+    : state.evaluationCatalog;
+  if (!questions.length) {
+    const empty = document.createElement("p");
+    empty.className = "empty";
+    empty.textContent = "No benchmark questions loaded";
+    evaluationQuestionList.appendChild(empty);
+  }
+  for (const question of questions) {
+    const row = document.createElement("label");
+    row.className = "evaluation-question-row";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = state.selectedEvaluationQuestions.has(question.id);
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) state.selectedEvaluationQuestions.add(question.id);
+      else state.selectedEvaluationQuestions.delete(question.id);
+      renderEvaluationQuestions();
+    });
+    const details = document.createElement("span");
+    details.className = "evaluation-question-details";
+    const title = document.createElement("strong");
+    title.textContent = question.id || "Unnamed question";
+    const meta = document.createElement("span");
+    meta.textContent = [question.domain, question.capability, question.intent].filter(Boolean).join(" · ") || "No metadata";
+    details.append(title, meta);
+    row.append(checkbox, details);
+    evaluationQuestionList.appendChild(row);
+  }
+  if (evaluationSelectionCount) {
+    const count = state.selectedEvaluationQuestions.size;
+    const catalogCount = Number.isInteger(state.evaluationCatalogTotal)
+      ? `${state.evaluationCatalogTotal} total questions`
+      : `${state.evaluationCatalog.length} loaded questions`;
+    evaluationSelectionCount.textContent = `${count} selected · ${catalogCount}`;
+  }
+}
+
+function populateEvaluationSelect(id, values, placeholder) {
+  const select = document.getElementById(id);
+  if (!select) return;
+  const current = select.value;
+  select.innerHTML = "";
+  const empty = document.createElement("option");
+  empty.value = "";
+  empty.textContent = placeholder;
+  select.appendChild(empty);
+  for (const value of [...new Set(values.filter(Boolean))].sort()) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = value;
+    select.appendChild(option);
+  }
+  select.value = current;
+}
+
+async function loadEvaluationCatalog() {
+  const params = new URLSearchParams({ limit: "500" });
+  const search = document.getElementById("evaluation-search")?.value.trim();
+  const domain = document.getElementById("evaluation-domain")?.value.trim();
+  const capability = document.getElementById("evaluation-capability")?.value.trim();
+  const taskType = document.getElementById("evaluation-task-type")?.value.trim();
+  if (search) params.set("q", search);
+  if (domain) params.set("domain", domain);
+  if (capability) params.set("capability", capability);
+  if (taskType) params.set("task_type", taskType);
+  setEvaluationStatus("Loading catalog");
+  try {
+    const response = await fetch(`/api/evaluations/catalog?${params}`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+    state.evaluationCatalog = data.questions || [];
+    state.evaluationCatalogTotal = Number.isInteger(data.total) ? data.total : null;
+    state.evaluationCatalogFacets = data.facets || {};
+    populateEvaluationSelect("evaluation-domain", data.facets?.domain || state.evaluationCatalog.map((item) => item.domain), "All domains");
+    populateEvaluationSelect(
+      "evaluation-capability",
+      data.facets?.capability || state.evaluationCatalog.flatMap((item) => Array.isArray(item.capability) ? item.capability : [item.capability]),
+      "All capabilities",
+    );
+    populateEvaluationSelect(
+      "evaluation-task-type",
+      data.facets?.task_type || state.evaluationCatalog.map((item) => item.task_type),
+      "All task types",
+    );
+    renderEvaluationQuestions();
+    setEvaluationStatus("");
+  } catch (error) {
+    setEvaluationStatus(`Catalog unavailable: ${error.message}`, true);
+  }
+}
+
+function renderEvaluationCampaign(campaign) {
+  if (!evaluationCampaignSummary) return;
+  if (!campaign) {
+    evaluationCampaignSummary.textContent = "Select questions to create an evaluation campaign.";
+    return;
+  }
+  const attempts = campaign.attempts || [];
+  const counts = attempts.reduce((result, attempt) => {
+    result[attempt.status] = (result[attempt.status] || 0) + 1;
+    return result;
+  }, {});
+  const completed = counts.completed || 0;
+  const score = attempts
+    .map((attempt) => Number(attempt.result?.weighted_score))
+    .filter(Number.isFinite);
+  const average = score.length ? (score.reduce((sum, value) => sum + value, 0) / score.length).toFixed(3) : "Pending";
+  evaluationCampaignSummary.innerHTML = "";
+  const status = document.createElement("strong");
+  status.textContent = `${campaign.status} · ${completed}/${attempts.length} completed`;
+  const result = document.createElement("span");
+  result.textContent = `Score: ${average}`;
+  evaluationCampaignSummary.append(status, result);
+  if (["starting", "active", "cancelling"].includes(campaign.status)) {
+    const cancelButton = document.createElement("button");
+    cancelButton.type = "button";
+    cancelButton.className = "evaluation-cancel-btn";
+    cancelButton.textContent = campaign.status === "cancelling" ? "Cancelling" : "Stop evaluation";
+    cancelButton.disabled = campaign.status === "cancelling";
+    cancelButton.addEventListener("click", () => void cancelEvaluationCampaign(campaign));
+    evaluationCampaignSummary.appendChild(cancelButton);
+  }
+  for (const attempt of attempts) {
+    const row = document.createElement("div");
+    row.className = "evaluation-attempt-row";
+    const label = document.createElement("span");
+    label.textContent = `${attempt.question_id} · ${attempt.status}`;
+    const openButton = document.createElement("button");
+    openButton.type = "button";
+    openButton.className = "evaluation-attempt-open";
+    openButton.textContent = "Open session";
+    openButton.disabled = !attempt.runtime_session_id;
+    openButton.addEventListener("click", () => openEvaluationAttempt(campaign, attempt));
+    row.append(label, openButton);
+    evaluationCampaignSummary.appendChild(row);
+    const task = attempt.task_payload || {};
+    if (task.prompt) {
+      const details = document.createElement("details");
+      details.className = "evaluation-task-details";
+      const summary = document.createElement("summary");
+      summary.textContent = "Question sent to agent";
+      const prompt = document.createElement("pre");
+      prompt.textContent = task.prompt;
+      details.append(summary, prompt);
+      if (task.data_files?.length) {
+        const files = document.createElement("p");
+        files.className = "evaluation-task-files";
+        files.textContent = `Input files: ${task.data_files.join(", ")}`;
+        details.appendChild(files);
+      }
+      evaluationCampaignSummary.appendChild(details);
+    }
+  }
+  for (const attempt of attempts.filter((item) => item.error)) {
+    const error = document.createElement("span");
+    error.className = "evaluation-attempt-error";
+    error.textContent = `${attempt.question_id}: ${attempt.error}`;
+    evaluationCampaignSummary.appendChild(error);
+  }
+}
+
+async function loadEvaluationAttemptEvents(campaign) {
+  if (!evaluationLiveFeed) return;
+  const activeAttempts = (campaign?.attempts || []).filter((item) => ["runtime_starting", "running"].includes(item.status));
+  evaluationLiveFeed.textContent = activeAttempts.length
+    ? `${activeAttempts.length} agent session${activeAttempts.length === 1 ? "" : "s"} running. Open an attempt to view its standard session stream.`
+    : "";
+}
+
+function openEvaluationAttempt(campaign, attempt) {
+  if (!attempt.runtime_session_id) return;
+  setApplicationMode("workspace");
+  void switchSession(attempt.runtime_session_id, campaign.owner_id || state.userId);
+}
+
+async function loadEvaluationCampaign(campaignId) {
+  if (!state.userId || !campaignId) return;
+  try {
+    const response = await fetch(`/api/evaluations/campaigns/${encodeURIComponent(campaignId)}?user_id=${encodeURIComponent(state.userId)}`);
+    const campaign = await response.json();
+    if (!response.ok) throw new Error(campaign.detail || `HTTP ${response.status}`);
+    state.activeEvaluationCampaign = campaign;
+    renderEvaluationCampaign(campaign);
+    await loadEvaluationAttemptEvents(campaign);
+    setEvaluationStatus("");
+  } catch (error) {
+    setEvaluationStatus(`Could not load campaign: ${error.message}`, true);
+  }
+}
+
+async function loadEvaluationCampaigns() {
+  if (!state.userId || !evaluationCampaignList) return;
+  try {
+    const response = await fetch(`/api/evaluations/campaigns?user_id=${encodeURIComponent(state.userId)}`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+    evaluationCampaignList.innerHTML = "";
+    for (const campaign of data.campaigns || []) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "evaluation-campaign-row";
+      button.textContent = `${campaign.model_name} · ${campaign.status}`;
+      button.addEventListener("click", () => void loadEvaluationCampaign(campaign.campaign_id));
+      evaluationCampaignList.appendChild(button);
+    }
+    if (!evaluationCampaignList.childElementCount) {
+      evaluationCampaignList.textContent = "No campaigns yet";
+    }
+    setEvaluationStatus("");
+  } catch (error) {
+    setEvaluationStatus(`Could not load campaigns: ${error.message}`, true);
+  }
+}
+
+async function cancelEvaluationCampaign(campaign) {
+  if (!state.userId || !campaign?.campaign_id) return;
+  setEvaluationStatus("Cancelling evaluation");
+  try {
+    const response = await fetch(
+      `/api/evaluations/campaigns/${encodeURIComponent(campaign.campaign_id)}/cancel?user_id=${encodeURIComponent(state.userId)}`,
+      { method: "POST" },
+    );
+    const data = await response.json();
+    if (!response.ok) throw new Error(apiErrorMessage(data, `HTTP ${response.status}`));
+    state.activeEvaluationCampaign = data;
+    renderEvaluationCampaign(data);
+    setEvaluationStatus("Evaluation cancellation requested");
+    await loadEvaluationCampaigns();
+  } catch (error) {
+    setEvaluationStatus(`Could not cancel evaluation: ${error.message}`, true);
+  }
+}
+
+async function createAndStartEvaluation() {
+  if (!state.userId) {
+    setEvaluationStatus("Sign in before starting an evaluation", true);
+    return;
+  }
+  const questionIds = [...state.selectedEvaluationQuestions];
+  if (!questionIds.length) {
+    setEvaluationStatus("Select at least one question", true);
+    return;
+  }
+  if (questionIds.some((questionId) => typeof questionId !== "string" || !questionId.trim())) {
+    setEvaluationStatus("Selected question data is invalid. Refresh the catalog and select again.", true);
+    return;
+  }
+  const valueOf = (id, label) => {
+    const value = Number(document.getElementById(id)?.value);
+    if (!Number.isInteger(value) || value < 1) {
+      throw new Error(`${label} must be a positive integer`);
+    }
+    return value;
+  };
+  let maxParallelism;
+  let maxTurns;
+  let timeoutSeconds;
+  try {
+    maxParallelism = valueOf("evaluation-parallelism", "Parallelism");
+    maxTurns = valueOf("evaluation-turns", "Max turns");
+    timeoutSeconds = valueOf("evaluation-timeout", "Timeout");
+  } catch (error) {
+    setEvaluationStatus(error.message, true);
+    return;
+  }
+  const body = {
+    model_name: document.getElementById("evaluation-model")?.value.trim() || "matcreator",
+    question_ids: questionIds,
+    max_parallelism: maxParallelism,
+    max_turns: maxTurns,
+    timeout_seconds: timeoutSeconds,
+    flash: false,
+  };
+  setEvaluationStatus("Creating campaign");
+  try {
+    const createResponse = await fetch(`/api/evaluations/campaigns?user_id=${encodeURIComponent(state.userId)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const campaign = await createResponse.json();
+    if (!createResponse.ok) throw new Error(apiErrorMessage(campaign, `HTTP ${createResponse.status}`));
+    const startResponse = await fetch(`/api/evaluations/campaigns/${encodeURIComponent(campaign.campaign_id)}/start?user_id=${encodeURIComponent(state.userId)}`, { method: "POST" });
+    const started = await startResponse.json();
+    if (!startResponse.ok) throw new Error(apiErrorMessage(started, `HTTP ${startResponse.status}`));
+    state.activeEvaluationCampaign = { ...started, attempts: [] };
+    renderEvaluationCampaign(state.activeEvaluationCampaign);
+    await loadEvaluationCampaigns();
+    setEvaluationStatus("Evaluation queued");
+  } catch (error) {
+    setEvaluationStatus(`Could not start evaluation: ${error.message}`, true);
+  }
+}
+
+function setApplicationMode(mode) {
+  const evaluation = mode === "evaluation";
+  state.appMode = evaluation ? "evaluation" : "workspace";
+  workspaceModeBtn?.classList.toggle("active", !evaluation);
+  evaluationModeBtn?.classList.toggle("active", evaluation);
+  workspaceModeBtn?.setAttribute("aria-pressed", String(!evaluation));
+  evaluationModeBtn?.setAttribute("aria-pressed", String(evaluation));
+  evaluationPane?.classList.toggle("hidden", !evaluation);
+  evaluationTab?.classList.toggle("hidden", !evaluation);
+  evaluationTabPanel?.classList.toggle("hidden", !evaluation);
+  document.querySelectorAll(".sessions-pane, .remote-jobs-pane, .file-explorer-col").forEach((element) => {
+    element.classList.toggle("hidden", evaluation);
+  });
+  if (evaluation) {
+    activateCenterTab("evaluation");
+    void loadEvaluationCatalog();
+    void loadEvaluationCampaigns();
+    void loadEvaluationQuestionSets();
+    if (!evaluationPoll) {
+      evaluationPoll = setInterval(() => {
+        if (state.activeEvaluationCampaign?.campaign_id && ["draft", "starting", "active", "cancelling"].includes(state.activeEvaluationCampaign.status)) {
+          void loadEvaluationCampaign(state.activeEvaluationCampaign.campaign_id);
+        }
+        void loadEvaluationCampaigns();
+      }, 2000);
+    }
+  } else {
+    activateCenterTab("chat");
+    if (evaluationPoll) {
+      clearInterval(evaluationPoll);
+      evaluationPoll = null;
+    }
+  }
+}
+
+workspaceModeBtn?.addEventListener("click", () => setApplicationMode("workspace"));
+evaluationModeBtn?.addEventListener("click", () => setApplicationMode("evaluation"));
+document.getElementById("evaluation-refresh-catalog")?.addEventListener("click", () => void loadEvaluationCatalog());
+document.getElementById("evaluation-refresh-campaigns")?.addEventListener("click", () => void loadEvaluationCampaigns());
+document.getElementById("evaluation-refresh-question-sets")?.addEventListener("click", () => void loadEvaluationQuestionSets());
+document.getElementById("evaluation-create-start")?.addEventListener("click", () => void createAndStartEvaluation());
+document.getElementById("evaluation-question-set-select")?.addEventListener("change", (event) => loadSelectedQuestionSet(event.target.value));
+document.getElementById("evaluation-save-question-set")?.addEventListener("click", () => void saveEvaluationQuestionSet());
+document.getElementById("evaluation-update-question-set")?.addEventListener("click", () => void saveEvaluationQuestionSet(true));
+document.getElementById("evaluation-delete-question-set")?.addEventListener("click", () => void deleteEvaluationQuestionSet());
+document.getElementById("evaluation-clear-selection")?.addEventListener("click", () => {
+  state.selectedEvaluationQuestions.clear();
+  state.activeEvaluationQuestionSetId = "";
+  renderEvaluationQuestions();
+  renderEvaluationQuestionSets();
+});
+["evaluation-search", "evaluation-domain", "evaluation-capability", "evaluation-task-type"].forEach((id) => {
+  document.getElementById(id)?.addEventListener("change", () => void loadEvaluationCatalog());
+});
+document.getElementById("evaluation-selected-only")?.addEventListener("change", renderEvaluationQuestions);
 
 // ---------------------------------------------------------------------------
 // Agent Graph Visualization
@@ -733,6 +1220,17 @@ function renderSessionList(sessions) {
       });
       li.appendChild(logBtn);
 
+      const draftBtn = document.createElement("button");
+      draftBtn.className = "session-item-draft";
+      draftBtn.textContent = "EVAL DRAFT";
+      draftBtn.title = "Create an evaluation-question draft from this session";
+      draftBtn.disabled = status === "running";
+      draftBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        void showEvaluationQuestionDraft(s.id, owner);
+      });
+      li.appendChild(draftBtn);
+
       const delBtn = document.createElement("button");
       delBtn.className = "session-item-delete";
       delBtn.textContent = "×";
@@ -1017,6 +1515,74 @@ async function downloadSessionLog(sessionId, owner = state.userId) {
     URL.revokeObjectURL(objectUrl);
   } catch (err) {
     console.warn("Failed to download session log", err);
+  }
+}
+
+function showEvaluationQuestionDraftModal(draft) {
+  const existing = document.querySelector(".evaluation-draft-overlay");
+  if (existing) existing.remove();
+
+  const overlay = document.createElement("div");
+  overlay.className = "evaluation-draft-overlay";
+  const card = document.createElement("section");
+  card.className = "evaluation-draft-card";
+  card.setAttribute("role", "dialog");
+  card.setAttribute("aria-modal", "true");
+  card.setAttribute("aria-label", "Evaluation question draft");
+
+  const header = document.createElement("header");
+  header.className = "evaluation-draft-header";
+  const heading = document.createElement("div");
+  const eyebrow = document.createElement("div");
+  eyebrow.className = "eyebrow";
+  eyebrow.textContent = "Session-derived evaluation";
+  const title = document.createElement("h2");
+  title.textContent = draft.question.title;
+  heading.append(eyebrow, title);
+  const close = document.createElement("button");
+  close.className = "ghost";
+  close.type = "button";
+  close.textContent = "Close";
+  close.addEventListener("click", () => overlay.remove());
+  header.append(heading, close);
+
+  const notice = document.createElement("p");
+  notice.className = "evaluation-draft-notice";
+  notice.textContent = draft.publication.message;
+  const evidence = document.createElement("div");
+  evidence.className = "evaluation-draft-evidence";
+  const stepsHeading = document.createElement("h3");
+  stepsHeading.textContent = "Observable successful steps";
+  evidence.appendChild(stepsHeading);
+  const stepList = document.createElement("ol");
+  for (const step of draft.evidence.successful_steps) {
+    const item = document.createElement("li");
+    item.textContent = `${step.action}${step.summary ? `: ${step.summary}` : ""}`;
+    stepList.appendChild(item);
+  }
+  evidence.appendChild(stepList);
+  const artifacts = document.createElement("p");
+  artifacts.className = "evaluation-draft-artifacts";
+  artifacts.textContent = `${draft.evidence.artifacts.length} source artifact${draft.evidence.artifacts.length === 1 ? "" : "s"} available for review.`;
+  evidence.appendChild(artifacts);
+  card.append(header, notice, evidence);
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+  close.focus();
+  overlay.addEventListener("click", (event) => { if (event.target === overlay) overlay.remove(); });
+}
+
+async function showEvaluationQuestionDraft(sessionId, owner = state.userId) {
+  const query = owner ? `?user_id=${encodeURIComponent(owner)}` : "";
+  try {
+    const response = await fetch(
+      `/api/sessions/${encodeURIComponent(sessionId)}/evaluation-question-draft${query}`,
+      { method: "POST" },
+    );
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    showEvaluationQuestionDraftModal(await response.json());
+  } catch (error) {
+    console.warn("Failed to create evaluation question draft", error);
   }
 }
 
