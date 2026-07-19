@@ -125,7 +125,6 @@ const remoteJobListEl = document.getElementById("remote-job-list");
 const refreshRemoteJobsBtn = document.getElementById("refresh-remote-jobs");
 const remoteJobsToggleBtn = document.getElementById("remote-jobs-toggle");
 const remoteJobsPane = document.getElementById("remote-jobs-pane");
-<<<<<<< HEAD
 const workspaceModeBtn = document.getElementById("workspace-mode-btn");
 const evaluationModeBtn = document.getElementById("evaluation-mode-btn");
 const evaluationPane = document.getElementById("evaluation-pane");
@@ -138,7 +137,6 @@ const evaluationCampaignSummary = document.getElementById("evaluation-campaign-s
 const evaluationCampaignList = document.getElementById("evaluation-campaign-list");
 const evaluationLiveFeed = document.getElementById("evaluation-live-feed");
 let evaluationPoll = null;
-=======
 const remoteJobsDemoBadge = document.getElementById("remote-jobs-demo-badge");
 const remoteJobPopover = document.createElement("div");
 remoteJobPopover.className = "remote-job-detail";
@@ -146,7 +144,6 @@ remoteJobPopover.id = "remote-job-detail-popover";
 remoteJobPopover.setAttribute("role", "dialog");
 remoteJobPopover.setAttribute("aria-label", "Remote job details");
 document.body.appendChild(remoteJobPopover);
->>>>>>> origin/devel
 let knowledgeReviewPoll = null;
 let remoteJobsPoll = null;
 let remoteJobPopoverHideTimer = null;
@@ -1243,102 +1240,6 @@ function hideLocalAuthControls() {
 // Session list management
 // ---------------------------------------------------------------------------
 
-<<<<<<< HEAD
-async function loadSessions() {
-  if (!state.userId) return;
-  try {
-    const resp = state.isAdmin
-      ? await fetch(`/api/admin/sessions?user_id=${encodeURIComponent(state.userId)}`)
-      : await fetch(`/api/users/${encodeURIComponent(state.userId)}/sessions`);
-    if (!resp.ok) return;
-    const sessions = await resp.json();
-    renderSessionList(sessions);
-  } catch (_) {
-    // silently ignore — server may not be running yet
-  }
-}
-
-function renderSessionList(sessions) {
-  renderSessionList._lastSessions = sessions;
-  sessionListEl.innerHTML = "";
-  if (!Array.isArray(sessions) || !sessions.length) {
-    sessionListEl.innerHTML = '<li class="empty">No sessions yet</li>';
-    return;
-  }
-  sessions
-    .slice()
-    .filter((session) => state.sessionStatusFilter === "all" || sessionDisplayStatus(session, session.userId || state.userId) === state.sessionStatusFilter)
-    .sort((a, b) => (b.lastUpdateTime || 0) - (a.lastUpdateTime || 0))
-    .forEach((s) => {
-      const li = document.createElement("li");
-      const owner = s.userId || state.userId;
-      const isActive = s.id === state.sessionId && owner === state.activeSessionUserId;
-      const status = sessionDisplayStatus(s, owner);
-      li.className = "session-item" + (isActive ? " active" : "");
-      li.dataset.owner = owner;
-
-      const content = document.createElement("div");
-      content.className = "session-item-content";
-      const sessionLabel = state.isAdmin ? `${owner} / ${s.id}` : s.id;
-      const summary = s.summary || state.sessionSummaries[s.id];
-
-      const idLine = document.createElement("div");
-      idLine.className = "session-item-id";
-      idLine.textContent = sessionLabel;
-      const statusIndicator = document.createElement("span");
-      statusIndicator.className = `session-status-indicator status-${status}`;
-      statusIndicator.title = status;
-      idLine.prepend(statusIndicator);
-
-      if (summary) {
-        li.classList.add("has-summary");
-        const summaryLine = document.createElement("div");
-        summaryLine.className = "session-item-summary";
-        summaryLine.textContent = summary;
-        content.appendChild(summaryLine);
-        content.appendChild(idLine);
-      } else {
-        content.appendChild(idLine);
-      }
-      li.appendChild(content);
-
-      const logBtn = document.createElement("button");
-      logBtn.className = "session-item-log";
-      logBtn.textContent = "LOG JSON";
-      logBtn.title = "Download full session log";
-      logBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        downloadSessionLog(s.id, owner);
-      });
-      li.appendChild(logBtn);
-
-      const draftBtn = document.createElement("button");
-      draftBtn.className = "session-item-draft";
-      draftBtn.textContent = "GENERATE";
-      draftBtn.title = "Generate a staged benchmark question from this session";
-      draftBtn.disabled = status === "running";
-      draftBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        void showEvaluationQuestionDraft(s.id, owner);
-      });
-      li.appendChild(draftBtn);
-
-      const delBtn = document.createElement("button");
-      delBtn.className = "session-item-delete";
-      delBtn.textContent = "×";
-      delBtn.title = "Delete session";
-      delBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        deleteSession(s.id);
-      });
-      li.appendChild(delBtn);
-
-      li.title = summary ? `${summary}\n${sessionLabel}` : sessionLabel;
-      li.addEventListener("click", () => switchSession(s.id, owner));
-      sessionListEl.appendChild(li);
-    });
-}
-=======
 const { loadSessions, rerender: rerenderSessionList } = createSessionListController({
   state,
   sessionListEl,
@@ -1350,8 +1251,8 @@ const { loadSessions, rerender: rerenderSessionList } = createSessionListControl
   deleteSession,
   downloadSessionLog,
   sessionDisplayStatus,
+  showDraft: showEvaluationQuestionDraft,
 });
->>>>>>> origin/devel
 
 function sessionDisplayStatus(session, owner) {
   if (state.activeRequests.get(sessionRequestKey(session.id, owner))) return "running";
