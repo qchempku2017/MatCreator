@@ -611,6 +611,9 @@ async function loadEvaluationCampaigns() {
       button.type = "button";
       button.className = "evaluation-campaign-row";
       button.textContent = `${campaign.model_name} · ${campaign.status}`;
+      const isActive = campaign.campaign_id === state.activeEvaluationCampaign?.campaign_id;
+      button.classList.toggle("is-active", isActive);
+      if (isActive) button.setAttribute("aria-current", "true");
       button.addEventListener("click", () => void loadEvaluationCampaign(campaign.campaign_id));
       evaluationCampaignList.appendChild(button);
     }

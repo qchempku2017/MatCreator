@@ -311,54 +311,69 @@
             <button class="app-mode-btn" id="evaluation-mode-btn" type="button" aria-pressed="false">Evaluation</button>
           </div>
           <section class="evaluation-pane hidden" id="evaluation-pane" aria-live="polite">
-            <div class="block-header">Evaluation
-              <button class="ghost" id="evaluation-refresh-campaigns" type="button" title="Refresh campaigns">↺</button>
-            </div>
-            <label class="evaluation-label" for="evaluation-model">Model label</label>
-            <input class="evaluation-input" id="evaluation-model" type="text" value="matcreator">
-            <div class="evaluation-number-grid">
-              <label class="evaluation-label" for="evaluation-parallelism">Parallelism
-                <input class="evaluation-input" id="evaluation-parallelism" type="number" min="1" value="1">
-              </label>
-              <label class="evaluation-label" for="evaluation-turns">Max turns
-                <input class="evaluation-input" id="evaluation-turns" type="number" min="1" value="50">
-              </label>
-              <label class="evaluation-label" for="evaluation-timeout">Timeout (s)
-                <input class="evaluation-input" id="evaluation-timeout" type="number" min="1" value="600">
-              </label>
-            </div>
-            <section class="evaluation-question-sets" aria-label="Saved question sets">
-              <div class="block-header">Question sets
-                <button class="ghost" id="evaluation-refresh-question-sets" type="button" title="Refresh question sets">↺</button>
+            <section class="evaluation-runs-pane" aria-label="Evaluation runs">
+              <div class="block-header">Evaluation runs
+                <button class="ghost" id="evaluation-refresh-campaigns" type="button" title="Refresh campaigns">↺</button>
               </div>
-              <select class="evaluation-input" id="evaluation-question-set-select" aria-label="Saved question set">
-                <option value="">Load a saved set</option>
-              </select>
-              <div class="evaluation-question-set-save">
-                <input class="evaluation-input" id="evaluation-question-set-name" type="text" maxlength="120" placeholder="Set name">
-                <select class="evaluation-input" id="evaluation-question-set-visibility" aria-label="Question set visibility">
-                  <option value="private">Private</option>
-                  <option value="shared">Shared</option>
-                </select>
-              </div>
-              <div class="evaluation-question-set-actions">
-                <button class="ghost" id="evaluation-save-question-set" type="button">Save selection</button>
-                <button class="ghost" id="evaluation-update-question-set" type="button" disabled>Update</button>
-                <button class="ghost" id="evaluation-delete-question-set" type="button" disabled>Delete</button>
+              <div class="evaluation-campaign-summary" id="evaluation-campaign-summary"></div>
+              <div class="evaluation-runs-list-body">
+                <div class="evaluation-campaign-list" id="evaluation-campaign-list"></div>
               </div>
             </section>
-            <section class="evaluation-generated-questions" aria-label="Generated questions">
-              <div class="block-header">Generated questions
-                <button class="ghost" id="evaluation-refresh-generated-questions" type="button" title="Refresh generated questions">↺</button>
-              </div>
-              <div class="evaluation-generated-question-list" id="evaluation-generated-question-list">
-                <p class="empty">No generated questions loaded</p>
-              </div>
-            </section>
-            <button class="evaluation-start-btn" id="evaluation-create-start" type="button">Start evaluation</button>
-            <p class="evaluation-status" id="evaluation-status"></p>
-            <div class="evaluation-campaign-summary" id="evaluation-campaign-summary"></div>
-            <div class="evaluation-campaign-list" id="evaluation-campaign-list"></div>
+            <div class="evaluation-configuration">
+              <details class="panel-block evaluation-disclosure" open>
+                <summary class="block-header">Evaluation settings</summary>
+                <div class="evaluation-disclosure-body">
+                  <label class="evaluation-label" for="evaluation-model">Model label</label>
+                  <input class="evaluation-input" id="evaluation-model" type="text" value="matcreator">
+                  <div class="evaluation-number-grid">
+                    <label class="evaluation-label" for="evaluation-parallelism">Parallelism
+                      <input class="evaluation-input" id="evaluation-parallelism" type="number" min="1" value="1">
+                    </label>
+                    <label class="evaluation-label" for="evaluation-turns">Max turns
+                      <input class="evaluation-input" id="evaluation-turns" type="number" min="1" value="50">
+                    </label>
+                    <label class="evaluation-label" for="evaluation-timeout">Timeout (s)
+                      <input class="evaluation-input" id="evaluation-timeout" type="number" min="1" value="600">
+                    </label>
+                  </div>
+                </div>
+              </details>
+              <details class="panel-block evaluation-disclosure evaluation-question-sets" aria-label="Saved question sets">
+                <summary class="block-header">Question sets</summary>
+                <button class="ghost evaluation-disclosure-refresh" id="evaluation-refresh-question-sets" type="button" title="Refresh question sets">↺</button>
+                <div class="evaluation-disclosure-body">
+                  <select class="evaluation-input" id="evaluation-question-set-select" aria-label="Saved question set">
+                    <option value="">Load a saved set</option>
+                  </select>
+                  <div class="evaluation-question-set-save">
+                    <input class="evaluation-input" id="evaluation-question-set-name" type="text" maxlength="120" placeholder="Set name">
+                    <select class="evaluation-input" id="evaluation-question-set-visibility" aria-label="Question set visibility">
+                      <option value="private">Private</option>
+                      <option value="shared">Shared</option>
+                    </select>
+                  </div>
+                  <div class="evaluation-question-set-actions">
+                    <button class="ghost" id="evaluation-save-question-set" type="button">Save selection</button>
+                    <button class="ghost" id="evaluation-update-question-set" type="button" disabled>Update</button>
+                    <button class="ghost" id="evaluation-delete-question-set" type="button" disabled>Delete</button>
+                  </div>
+                </div>
+              </details>
+              <details class="panel-block evaluation-disclosure evaluation-generated-questions" aria-label="Generated questions">
+                <summary class="block-header">Generated questions</summary>
+                <button class="ghost evaluation-disclosure-refresh" id="evaluation-refresh-generated-questions" type="button" title="Refresh generated questions">↺</button>
+                <div class="evaluation-disclosure-body">
+                  <div class="evaluation-generated-question-list" id="evaluation-generated-question-list">
+                    <p class="empty">No generated questions loaded</p>
+                  </div>
+                </div>
+              </details>
+            </div>
+            <div class="evaluation-start-area">
+              <p class="evaluation-status" id="evaluation-status"></p>
+              <button class="evaluation-start-btn" id="evaluation-create-start" type="button">Start evaluation</button>
+            </div>
           </section>
           <section class="panel-block sessions-pane">
             <div class="block-header">Sessions

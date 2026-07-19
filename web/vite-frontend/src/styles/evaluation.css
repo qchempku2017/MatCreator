@@ -29,6 +29,52 @@
   flex-direction: column;
   gap: 10px;
 }
+.evaluation-runs-pane {
+  display: flex;
+  flex: 1 1 38%;
+  min-height: 160px;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.evaluation-runs-list-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+.evaluation-configuration {
+  display: grid;
+  flex: 0 1 auto;
+  min-height: 0;
+  gap: 6px;
+  overflow-y: auto;
+}
+.evaluation-disclosure {
+  position: relative;
+  padding: 8px;
+  border-radius: 6px;
+}
+.evaluation-disclosure > summary.block-header {
+  font-size: 12px;
+}
+.evaluation-disclosure-refresh {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+}
+.evaluation-disclosure-body {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+.evaluation-start-area {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 6px;
+  margin-top: auto;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
 .evaluation-label {
   display: flex;
   flex-direction: column;
@@ -57,12 +103,6 @@
 }
 .evaluation-question-sets,
 .evaluation-generated-questions {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
   background: rgba(255, 255, 255, 0.02);
 }
 .evaluation-generated-question-list { display: grid; gap: 5px; max-height: 180px; overflow-y: auto; }
@@ -116,6 +156,8 @@
   display: flex;
   flex-direction: column;
   gap: 3px;
+  max-height: 180px;
+  overflow-y: auto;
   padding: 9px;
   border-left: 2px solid var(--accent);
   background: rgba(125, 211, 252, 0.06);
@@ -175,9 +217,11 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
-  overflow-y: auto;
 }
 .evaluation-campaign-row {
+  display: flex;
+  align-items: center;
+  min-height: 34px;
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 5px;
@@ -192,6 +236,11 @@
   cursor: pointer;
 }
 .evaluation-campaign-row:hover { border-color: var(--accent); color: var(--accent); }
+.evaluation-campaign-row.is-active {
+  border-color: var(--accent);
+  background: rgba(125, 211, 252, 0.1);
+  color: var(--accent);
+}
 .evaluation-tab-panel {
   min-height: 0;
   overflow: auto;
