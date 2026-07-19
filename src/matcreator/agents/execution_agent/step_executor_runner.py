@@ -643,6 +643,7 @@ async def run_step_executor(
 
     cancelled = False
     timed_out = False
+    runner_error: Optional[Exception] = None
     step_state_delta: dict = {}
     plot_paths: list[str] = []
     artifact_paths: list[str] = []
@@ -655,6 +656,8 @@ async def run_step_executor(
         timed_out = True
     except asyncio.CancelledError:
         cancelled = True
+    except Exception as exc:
+        runner_error = exc
     finally:
         if not watcher.done():
             watcher.cancel()
@@ -724,6 +727,40 @@ async def run_step_executor(
         return {
             "status": "cancelled",
             "message": f"Step {step_number} cancelled ({reason}).",
+        }
+
+    if runner_error is not None:
+        error_message = f"Step executor failed unexpectedly: {runner_error}"
+        logger.error(
+            "[step_executor_runner] node %s failed unexpectedly: %s",
+            effective_id,
+            runner_error,
+            exc_info=(type(runner_error), runner_error, runner_error.__traceback__),
+        )
+        await asyncio.to_thread(
+            graph.log_node_complete,
+            step_id,
+            "failed",
+            summary=error_message,
+        )
+        append_session_log_entry(tool_context, {
+            "kind": "step_complete",
+            **step_input_log,
+            "status": "failed",
+            "message": error_message,
+            "events": event_log,
+        }, artifacts=artifact_paths)
+        await asyncio.to_thread(
+            finish_node_attempt,
+            recovery_attempt,
+            status="failed",
+            artifacts=artifact_paths,
+            message=error_message,
+        )
+        clear_step_cancellation(session_id, step_number)
+        return {
+            "status": "error",
+            "message": error_message,
         }
 
     if step_state_delta:
