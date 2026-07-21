@@ -119,20 +119,22 @@ from ase.calculators.singlepoint import SinglePointCalculator
 all_atoms = ...
 relabeled_atoms = []
 for atoms in all_atoms:
+    # Prepare a copy for storage: make a copy of the Atoms, then drop the calculator to prevent dead-loop calls,
+    # because ASE calculators stores the Atoms object that calls it inside its attributes, while Atoms also stores the
+    # calculator pointer inside its attributes.
+    # Pretty dumb indeed, but this is how ASE works.
+    atoms_cp = atoms.copy()
+    atoms_cp.calc = None
+    # Set calculator.
     atoms.calc = None
     atoms.calc = new_calc
     # Relabel
     e = atoms.get_potential_energy()
     f = atoms.get_forces()
     s = atoms.get_stress()
-    # Make a copy of the Atoms, then drop the calculator to prevent dead-loop calls,
-    # as ASE calculators stores the Atoms object that calls it inside its attributes.
-    # Pretty dumb indeed, but this is how ASE works.
-    atoms_cp = atoms.copy()
-    atoms_cp.calc = None
     # Attach single point calculator to store the results.
-    # Do NOT use SinglePointCalculator(atoms, **kwargs) as it will cause dead-loop calls.
-    # Do NOT use SinglePointCalculator(atoms_cp, **atoms.calc.results) as some calculator
+    # Do NOT use SinglePointCalculator(atoms, **kwargs) as it may trigger dead loop.
+    # Do NOT use SinglePointCalculator(atoms_cp, **atoms.calc.results) directly as some calculator
     # may store result keys unsupported by SinglePointCalculator.
     # SinglePointCalculator supports only `energy`, `forces`, `stress`, and `magmom`.
     # For most cases, `energy`, `forces`, and `stress` are enough.
