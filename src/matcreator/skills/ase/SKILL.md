@@ -100,6 +100,47 @@ methods above.
 > which is the default format for stress output in ASE. The voigt notation: (vxx, vyy, vzz, vyx, vxz, vyz).
 > Set voigt=False to get the full, 3-by-3 stress tensor.
 
+**A very common pitfall when labeling multiple structures:**
+
+ASE only resets the pointer, when specifying atoms.calc = calc. Therefore, when reusing the same calculator for
+labeling multiple `Atoms` objects, simply resetting the calculator for each `Atoms` object is NOT enough, as 
+every `Atoms` object's calculator will be reset to the same as the last atoms that uses it,
+and `atoms.calc.results` will be  overwritten for all previous `Atoms` objects.
+
+Therefore, you must either create a new calculator for each `Atoms` object,
+or **re-initialize a `SinglePointCalculator` for each `Atoms` object** after the calculation is done 
+to permanently store the essential results. The latter method is recommended as it is much 
+more memory-efficient.
+
+An example for relabeling a list of `Atoms` objects with another `new_calc`:
+```python
+from ase.calculators.singlepoint import SinglePointCalculator
+
+all_atoms = ...
+relabeled_atoms = []
+for atoms in all_atoms:
+    atoms.calc = None
+    atoms.calc = new_calc
+    # Relabel
+    e = atoms.get_potential_energy()
+    f = atoms.get_forces()
+    s = atoms.get_stress()
+    # Make a copy of the Atoms, then drop the calculator to prevent dead-loop calls,
+    # as ASE calculators stores the Atoms object that calls it inside its attributes.
+    # Pretty dumb indeed, but this is how ASE works.
+    atoms_cp = atoms.copy()
+    atoms_cp.calc = None
+    # Attach single point calculator to store the results.
+    # Do NOT use SinglePointCalculator(atoms, **kwargs) as it will cause dead-loop calls.
+    # Do NOT use SinglePointCalculator(atoms_cp, **atoms.calc.results) as some calculator
+    # may store result keys unsupported by SinglePointCalculator.
+    # SinglePointCalculator supports only `energy`, `forces`, `stress`, and `magmom`.
+    # For most cases, `energy`, `forces`, and `stress` are enough.
+    single = SinglePointCalculator(atoms_cp, energy=e, forces=f, stress=s)
+    atoms_cp.calc = single
+    relabeled_atoms.append(atoms_cp)
+```
+
 5. Save the results:
 
 Use `ase.io.write` to save the results. Example:
@@ -186,7 +227,7 @@ For bohrium submission:
 
 ## MD Pipeline
 1. Always perform a relaxation before MD to prevent structure collapse.
-2. When running NPT simulation, IsotropicMTKNPT is recommended. For NVT simulation,
+2. When running NPT simulation, use `ase.md.nose_hoover_chain.IsotropicMTKNPT`. For NVT simulation,
    use `ase.md.nose_hoover_chain.NoseHooverChainNVT`.
 3. Attach trajectory write actions and monitor actions to the Ensemble dynamics object via `dyn.attach()` method,
    where the interval of performing write actions can be specified via setting keyword `interval`.
@@ -477,8 +518,8 @@ if __name__ == "__main__":
 ```
 
 For bohrium submission:
-- Required forward files: **script.py**, **structure.xyz**, **
-- Required backward files:
+- Required forward files: **script.py**, **structure.xyz**, **<the_model_file>**
+- Required backward files: **./results** (or other output directory, if specified), including all `.traj` files, `*.log` files, `.csv` files (if )
 
 ---
 
